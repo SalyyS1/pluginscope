@@ -74,10 +74,11 @@ object JarRules {
         title = "Version-like value is unquoted, so YAML changed it",
         rationale = "YAML resolves an unquoted 1.20 to the number 1.2 and 1.10 to 1.1, dropping the " +
             "trailing zero before anything Minecraft-specific ever sees the value. The descriptor " +
-            "then declares a version nobody intended, and no error is raised anywhere.",
+            "then declares a version nobody intended, and no error is raised anywhere. Only " +
+            "reported when the value no longer reads as it was written: 1.21 unquoted survives.",
         provenance = "SnakeYAML's YAML 1.1 float resolver, applied to the same descriptor the server " +
             "loads with org.yaml.snakeyaml.Yaml (referenced from paper-api PluginDescriptionFile)",
-        fix = "Quote it: api-version: '1.20'.",
+        fix = "Quote the value so it stays exactly as written.",
     )
 
     val DESCRIPTOR_UNKNOWN_KEY = Rule(

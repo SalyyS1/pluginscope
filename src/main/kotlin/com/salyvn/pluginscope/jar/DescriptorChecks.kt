@@ -98,12 +98,13 @@ internal object DescriptorChecks {
             )
         }
 
-        for ((key, parsed) in descriptor.retypedScalars) {
+        for ((key, scalar) in descriptor.retypedScalars) {
             sink.add(
                 JarRules.UNQUOTED_VERSION_SCALAR,
                 location = "${descriptor.kind.entryName}: $key",
-                detail = "YAML read this as the number $parsed, so that is the value the server gets.",
-                evidence = listOf("quote the value to keep it exactly as written, e.g. $key: '1.20'"),
+                detail = "Written as ${scalar.written}, but the server reads ${scalar.loaded}: " +
+                    "YAML resolved it as a number.",
+                evidence = listOf("quote the value to keep it exactly as written: $key: '${scalar.written}'"),
             )
         }
 

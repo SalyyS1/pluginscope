@@ -1,6 +1,6 @@
 # Rules
 
-Every check pluginscope can report, as printed by `pluginscope rules` in version 0.1.0.
+Every check pluginscope can report, as printed by `pluginscope rules` in version 0.1.1.
 Each rule carries the source of the fact behind it, so a finding can be argued with.
 
 Severities: `blocker` means the artifact does not load, `critical` means it loads and then
@@ -135,9 +135,9 @@ being claimed.
 
 `warning`
 
-**Why it matters.** YAML resolves an unquoted 1.20 to the number 1.2 and 1.10 to 1.1, dropping the trailing zero before anything Minecraft-specific ever sees the value. The descriptor then declares a version nobody intended, and no error is raised anywhere.
+**Why it matters.** YAML resolves an unquoted 1.20 to the number 1.2 and 1.10 to 1.1, dropping the trailing zero before anything Minecraft-specific ever sees the value. The descriptor then declares a version nobody intended, and no error is raised anywhere. Only reported when the value no longer reads as it was written: 1.21 unquoted survives.
 
-**Fix.** Quote it: api-version: '1.20'.
+**Fix.** Quote the value so it stays exactly as written.
 
 **Source.** SnakeYAML's YAML 1.1 float resolver, applied to the same descriptor the server loads with org.yaml.snakeyaml.Yaml (referenced from paper-api PluginDescriptionFile)
 

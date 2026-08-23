@@ -90,6 +90,30 @@ class JarAuditTest {
     }
 
     @Test
+    fun `an unquoted api-version that YAML rewrites is reported with both values`() {
+        val jar = FixtureJars.pluginJar(
+            jarName = "unquoted-api-version",
+            descriptor = "name: Trailing\nversion: 1.0.0\nmain: fixtures.clean.CleanPlugin\napi-version: 1.20\n",
+            packagePaths = listOf("fixtures/clean/"),
+        )
+        val finding = audit(jar).findings.first { it.ruleId == "J013" }
+        assertTrue(finding.detail.contains("1.20") && finding.detail.contains("reads 1.2")) { finding.detail }
+        assertTrue(finding.evidence.any { it.contains("'1.20'") }) { finding.evidence.toString() }
+    }
+
+    @Test
+    fun `an unquoted api-version that survives YAML is left alone`() {
+        // 1.21 loads as a float that prints back as "1.21", so the server reads what was written.
+        // Nearly every real plugin writes it unquoted, so reporting this would be noise.
+        val jar = FixtureJars.pluginJar(
+            jarName = "unquoted-but-intact",
+            descriptor = "name: Intact\nversion: 1.0.0\nmain: fixtures.clean.CleanPlugin\napi-version: 1.21\n",
+            packagePaths = listOf("fixtures/clean/"),
+        )
+        assertEquals(emptyList<String>(), audit(jar).findings.map { "${it.ruleId} ${it.detail}" })
+    }
+
+    @Test
     fun `a jar without a descriptor is treated as a library`() {
         val jar = FixtureJars.pluginJar(jarName = "library", descriptor = null, packagePaths = listOf("fixtures/clean/"))
         val report = audit(jar)

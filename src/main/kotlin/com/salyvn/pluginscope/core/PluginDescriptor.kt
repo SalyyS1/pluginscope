@@ -23,6 +23,11 @@ data class DependencyRef(
 )
 
 /**
+ * A value the author typed and the value the YAML parser handed on, when the two differ.
+ */
+data class RetypedScalar(val written: String, val loaded: String)
+
+/**
  * What a plugin says about itself. Parsed leniently: a malformed descriptor is still worth
  * reporting on, so unreadable fields become null instead of throwing.
  */
@@ -48,11 +53,11 @@ data class PluginDescriptor(
     /** Keys present in the file that the format does not define. */
     val unknownKeys: List<String> = emptyList(),
     /**
-     * Keys whose YAML value came back as a number or boolean where the format wants a string,
-     * keyed to what the parser produced. `api-version: 1.20` unquoted is the classic case: YAML
-     * reads it as the float 1.2, so the value the server ends up with is "1.2".
+     * Keys whose YAML value came back as a number and no longer reads as it was written.
+     * `api-version: 1.20` unquoted is the classic case: YAML reads it as the float 1.2, so the
+     * value the server ends up with is "1.2".
      */
-    val retypedScalars: Map<String, String> = emptyMap(),
+    val retypedScalars: Map<String, RetypedScalar> = emptyMap(),
     /** Parse problems that did not stop the rest of the file being read. */
     val parseErrors: List<String> = emptyList(),
 ) {
@@ -89,9 +94,9 @@ object DescriptorParser {
     )
 
     /**
-     * Keys the formats define as strings, where an unquoted value silently changes meaning:
-     * YAML resolves `1.20` to a float and `1.10` to `1.1`, so the string the server reads is not
-     * the string that was written.
+     * Keys the formats define as strings, where an unquoted value can silently change meaning:
+     * YAML resolves `1.20` to a float and prints it back as `1.2`, so the string the server reads
+     * is not the string that was written.
      */
     private val RETYPED_CANDIDATES = listOf("api-version", "version")
 
@@ -144,12 +149,37 @@ object DescriptorParser {
             retypedScalars = RETYPED_CANDIDATES
                 .mapNotNull { key ->
                     val value = map[key] ?: return@mapNotNull null
-                    if (value is String || value is Map<*, *> || value is List<*>) null else key to value.toString()
+                    if (value is String || value is Map<*, *> || value is List<*>) return@mapNotNull null
+                    val loaded = value.toString()
+                    // Unquoted 1.21 loads as a float that prints back as "1.21", so nothing was
+                    // lost and there is nothing to report. Only a value that no longer reads as it
+                    // was written is a defect, and the written form only exists in the file text.
+                    val written = writtenValueOf(key, yamlBytes) ?: return@mapNotNull null
+                    if (written == loaded) return@mapNotNull null
+                    key to RetypedScalar(written = written, loaded = loaded)
                 }
                 .toMap(),
             parseErrors = errors,
         )
     }
+
+    /**
+     * The value as it appears in the file, for a key at the top level of the mapping. The loaded
+     * value has already been through YAML's resolver, so the text the author typed is the only way
+     * to tell a value that survived from one that was rewritten. Returns null when the value is not
+     * a plain one-line scalar, which keeps the comparison from claiming a change it cannot prove.
+     */
+    private fun writtenValueOf(key: String, yamlBytes: ByteArray): String? {
+        val line = yamlBytes.toString(Charsets.UTF_8)
+            .lineSequence()
+            .firstOrNull { it.startsWith("$key:") }
+            ?: return null
+        val value = line.substringAfter(':').replace(TRAILING_COMMENT, "").trim()
+        return value.ifEmpty { null }
+    }
+
+    /** A `#` that starts a comment has to be preceded by whitespace to end a plain scalar. */
+    private val TRAILING_COMMENT = Regex("\\s+#.*$")
 
     private fun legacyDependencies(map: Map<String, Any?>): List<DependencyRef> =
         map.strList("depend").map { DependencyRef(it, required = true) } +
