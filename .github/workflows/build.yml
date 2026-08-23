@@ -1,0 +1,50 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Build and test
+        run: ./gradlew build --no-daemon
+
+      - name: Smoke test the CLI
+        run: |
+          set -euo pipefail
+          CLI=$(ls build/libs/pluginscope-*.jar | grep -v -- '-thin' | head -1)
+          echo "using $CLI"
+          # The rule catalogue must render, and auditing a jar with no descriptor has to be
+          # treated as a library rather than crash.
+          java -jar "$CLI" --version
+          java -jar "$CLI" rules > /dev/null
+          java -jar "$CLI" jar build/libs/pluginscope-*-thin.jar --no-color --fail-on never
+          java -jar "$CLI" stack build/libs --no-color --fail-on never
+          # The MCP server has to answer a handshake on stdio and then exit on EOF.
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}' \
+            | java -jar "$CLI" mcp | grep -q '"protocolVersion"'
+
+      - name: Upload the CLI jar
+        uses: actions/upload-artifact@v5
+        with:
+          name: pluginscope
+          path: build/libs/pluginscope-*.jar
+          if-no-files-found: error

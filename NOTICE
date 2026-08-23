@@ -1,0 +1,134 @@
+pluginscope
+Copyright 2026 SalyVn (https://github.com/SalyyS1)
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file.
+
+================================================================================
+Third-party dependencies bundled in the shaded release jar
+================================================================================
+
+Licenses below were read from each artifact's published POM on Maven Central.
+
+  ASM 9.10.1                              BSD-3-Clause
+  org.ow2.asm:asm                         https://asm.ow2.io/
+
+  SnakeYAML 2.6                           Apache-2.0
+  org.yaml:snakeyaml                      https://bitbucket.org/snakeyaml/snakeyaml
+
+  Clikt 5.1.0                             Apache-2.0
+  com.github.ajalt.clikt:clikt            https://github.com/ajalt/clikt
+
+  kotlinx.serialization 1.11.0            Apache-2.0
+  org.jetbrains.kotlinx:kotlinx-serialization-json
+                                          https://github.com/Kotlin/kotlinx.serialization
+
+  Kotlin standard library 2.4.10          Apache-2.0
+  org.jetbrains.kotlin:kotlin-stdlib      https://kotlinlang.org
+
+================================================================================
+Where the facts come from
+================================================================================
+
+Every rule states a fact about how a server, a class file or a pack behaves, and
+each one was established from a primary source rather than from recollection.
+The source is recorded on the rule and printed by `pluginscope rules` and by
+`--verbose`, so any claim the tool makes can be checked.
+
+  Libraries the server provides to plugins
+    Read from the published POM of io.papermc.paper:paper-api
+    (26.2.build.116-stable) on repo.papermc.io. Only compile-scope entries are
+    listed, because those are the ones a plugin sees. The server's own runtime
+    dependencies are deliberately not in the table: whether a plugin classloader
+    can reach them is a separate question this project has not verified.
+
+  api-version numbering
+    Read from apiVersioning.json inside the paper-api jar, which carries
+    {"version":"26.2.build.116-stable","currentApiVersion":"26.2"}. The accepted
+    shapes (major.minor[.patch], or the literal "none") follow Paper's own
+    parsing in CraftMagicNumbers / ApiVersion.
+
+  Plugin descriptor keys and the plugin-name pattern
+    Read out of the constant pool of org/bukkit/plugin/PluginDescriptionFile.class
+    in the same paper-api jar, including the VALID_NAME pattern ^[A-Za-z0-9 _.-]+$
+    and the refusal of a main class inside the org.bukkit namespace.
+
+  Class file major versions
+    Fixed by the JVM specification: major 52 is Java 8 and each release adds one.
+
+  Resource-pack format numbers
+    Fetched at run time from the version summary published by misode/mcmeta and
+    cached locally. That repository carries no licence file, so no copy of the
+    data is vendored here: the tool downloads it when asked to and works fully
+    offline when the format number is supplied directly.
+
+  Pack metadata structure
+    Field names, optionality and the supported_formats / min_format rules were
+    taken from SpyglassMC's vanilla-mcdoc (MIT), which is a schema description
+    rather than game data.
+
+  Model Context Protocol
+    Message shapes, the stdio framing rule and the error-code table were taken
+    from the specification repository at modelcontextprotocol/modelcontextprotocol.
+
+No Minecraft, Mojang, Paper, CraftBukkit or Bukkit code is included in, derived
+into, or distributed with this project, and no game data is bundled. The rule
+table quotes short identifiers and diagnostic strings so that its claims are
+auditable against their sources.
+
+================================================================================
+Prior art
+================================================================================
+
+None of the projects below contributed code to this one. They are credited
+because they solved a neighbouring problem first, and reading them shaped what
+pluginscope does and does not try to do.
+
+  kitsune-de/mcdrift               MIT           Minecraft version-drift scanning
+                                                 for plugin jars, with SARIF
+                                                 output. The closest existing
+                                                 tool to the `jar` command.
+  smarkwal/jarhc                   Apache-2.0    Jar health analysis decomposed
+                                                 into independent analysers.
+  siom79/japicmp                   Apache-2.0    Member-level API diffing between
+                                                 two jars.
+  revapi/revapi                    Apache-2.0    API compatibility checking as a
+                                                 configurable pipeline.
+  mojohaus/animal-sniffer          MIT           Checking a jar against a
+                                                 recorded API surface.
+  policeman-tools/forbidden-apis   Apache-2.0    Signature files as the unit of a
+                                                 bytecode-level rule.
+  mojohaus/extra-enforcer-rules    Apache-2.0    banDuplicateClasses and
+                                                 enforceBytecodeVersion, the two
+                                                 hygiene rules everyone reaches
+                                                 for first.
+  HangarMC/HangarJarScanner        no licence     Paper's marketplace scanner.
+  HangarMC/Hangar                  MIT           Descriptor parsing across
+                                                 Bukkit, Paper and Velocity.
+  GradleUp/shadow                  Apache-2.0    The relocation behaviour the
+                                                 `jar` command audits.
+  Kotlin/binary-compatibility-validator
+                                   Apache-2.0    Snapshotting a public API and
+                                                 diffing it in CI.
+  JakeWharton/diffuse              Apache-2.0    Reporting artifact size and
+                                                 member counts usefully.
+  SpyglassMC/vanilla-mcdoc         MIT           Machine-readable descriptions of
+                                                 Minecraft's pack formats.
+  misode/mcmeta                    no licence     Version summaries and registry
+                                                 dumps, fetched at run time.
+  SchemaStore/schemastore          Apache-2.0    JSON Schemas for the plugin
+                                                 descriptors.
+  PaperMC/Paper                    mixed          The server whose behaviour every
+                                                 rule here describes.
+  OW2 ASM                          BSD-3-Clause  Bytecode reading.
+  SalyyS1/foliascan                Apache-2.0    Earlier tool by the same author;
+                                                 the finding model, the SARIF
+                                                 writer and the "relocated code is
+                                                 analysed but not blamed" split
+                                                 come from it.
+
+pluginscope is an independent project. It is not affiliated with, endorsed by or
+sponsored by PaperMC, Mojang or Microsoft.
+
+Test fixtures under src/test/java are original minimal stand-ins written for this
+project so that the fixtures compile without paper-api. They are not Bukkit,
+Paper or Minecraft code.

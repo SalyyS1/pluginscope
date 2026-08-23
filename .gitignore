@@ -1,0 +1,16 @@
+.gradle/
+build/
+out/
+*.class
+*.log
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Local run artifacts
+*.sarif
+pluginscope-report.json
+/samples/
+/cache/
