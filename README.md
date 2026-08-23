@@ -1,5 +1,7 @@
 # pluginscope
 
+[![build](https://github.com/SalyyS1/pluginscope/actions/workflows/build.yml/badge.svg)](https://github.com/SalyyS1/pluginscope/actions/workflows/build.yml)
+
 Static audits for Minecraft server plugins. It reads build output — jars, packs, a `plugins/`
 directory — and reports what will go wrong, without starting a server and without running any of
 the code it looks at.
