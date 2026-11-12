@@ -371,6 +371,16 @@ recorded API surface, [SpyglassMC](https://github.com/SpyglassMC/Spyglass) and
 [misode/mcmeta](https://github.com/misode/mcmeta) for version data. `NOTICE` has the full list with
 licences and what each one contributed to the design.
 
+## Companion Minecraft Toolchain
+
+| Tool | Purpose |
+| --- | --- |
+| [foliascan](https://github.com/SalyyS1/foliascan) | Bytecode and taint-flow verifier for Folia regionized multithreading (`CLI`, GitHub Action, and [browser JAR scanner](https://salyys1.github.io/foliascan/)). |
+| [serverdoctor](https://github.com/SalyyS1/serverdoctor) | Offline diagnostics across server logs, configs, JVM flags, crash reports, worlds, and operator/whitelist files (`CLI` + `mcp`). |
+| [minecraftkit](https://github.com/SalyyS1/minecraftkit) | Offline RPG and Paper/Folia API catalog, 10 `/mc:*` coding agent skills, [web API explorer](https://salyys1.github.io/minecraftkit/), and stdio MCP server. |
+| [mcstage](https://github.com/SalyyS1/mcstage) | Standalone CLI that boots a real Paper, Folia, or Purpur server, installs a plugin, drives the console, and asserts on logs. |
+| [glyphsmith](https://github.com/SalyyS1/glyphsmith) | Resource pack font compiler turning PNGs and coordinates into Minecraft bitmap glyphs and negative-space shifts. |
+
 ## Licence
 
 Apache-2.0. See `LICENSE`.
