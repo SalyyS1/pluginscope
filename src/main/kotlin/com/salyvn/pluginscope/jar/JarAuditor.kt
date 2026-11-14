@@ -25,8 +25,10 @@ class JarAuditor(private val options: JarAuditOptions = JarAuditOptions()) {
 
     fun audit(path: Path): ScanReport {
         val sink = FindingSink()
-        // First pass without method bodies: cheap, and it tells us which classes exist.
-        val jar = JarReader.read(path)
+        // First pass captures class metadata and server internal references for bytecode verification.
+        val jar = JarReader.read(path) { owner ->
+            owner.startsWith("net/minecraft/") || owner.startsWith("org/bukkit/craftbukkit/")
+        }
 
         DescriptorChecks.run(jar, sink)
         BundlingChecks.run(jar, options.targetJava, sink)
@@ -148,9 +150,12 @@ class JarAuditor(private val options: JarAuditOptions = JarAuditOptions()) {
     }
 
     /** Class names listed under `META-INF/services`, which are instantiated reflectively. */
-    private fun serviceImplementations(jar: JarInspection): List<String> = jar.resources
-        .filter { it.entryName.startsWith("META-INF/services/") && !it.isDirectory }
-        .map { it.entryName.removePrefix("META-INF/services/").replace('.', '/') }
+    private fun serviceImplementations(jar: JarInspection): List<String> = buildList {
+        addAll(jar.resources
+            .filter { it.entryName.startsWith("META-INF/services/") && !it.isDirectory }
+            .map { it.entryName.removePrefix("META-INF/services/").replace('.', '/') })
+        addAll(jar.serviceProviders.values.flatten().map { it.replace('.', '/') })
+    }
 
     private fun internalNameOf(type: Type): String? = when (type.sort) {
         Type.OBJECT -> type.internalName

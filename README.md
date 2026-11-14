@@ -20,15 +20,17 @@ Four commands, four questions:
 
 `pluginscope mcp` also serves all analyses over the Model Context Protocol on `stdio` so coding agents can audit plugin artifacts directly.
 
-## What is new in v0.2.0
+## What is new in v0.3.0
 
-- **Transitive Shading Collision Detection (`J024`, `S032`)**: Detects single-JAR unrelocated `org.bstats` (`J024`, catching bStats's static `IllegalStateException` relocation guard even on 1-class bundles) and multi-plugin transitive shading collisions (`S032`) across `org.bstats`, `net.kyori`, `com.zaxxer.hikari`, `com.google.gson`, `org.yaml.snakeyaml`, `org.slf4j`, `com.github.benmanes.caffeine`, and `io.netty`, backed by method/field/bytecode-version ABI fingerprinting.
-- **Paper Isolated Classloader & Descriptor Drift Audit (`J042`, `S003`, `S004`)**:
-  - `J042` catches dual-descriptor JARs (`paper-plugin.yml` + `plugin.yml`) where dependencies or Maven `libraries:` exist in `plugin.yml` but were omitted from `paper-plugin.yml`, missing `bootstrapper` / `loader` classes, and `dependencies.bootstrap`-only traps.
-  - `S003` scans cross-plugin bytecode calls across `plugins/` and flags plugins that reference another installed plugin's classes without declaring a dependency (`critical` under Paper's isolated `PaperPluginClassLoader`).
-  - `S004` flags `join-classpath: false` / `dependencies.bootstrap`-only callers and legacy `plugin.yml` plugins accessing `paper-plugin.yml` targets that set `has-open-classloader: false`.
-- **GitHub Code Scanning SARIF v2.1.0 & Composite Action (`action.yml`, `--sarif`)**: Repo-relative `artifactLocation.uri`, `uriBaseId: "%SRCROOT%"`, `region.startLine`, `ruleIndex`, Markdown remediation help, and simultaneous console + `--sarif <file>` output.
-- **Zero-Backend Browser JAR Inspector (`docs/index.html`)**: Client-side ZIP central directory + `DecompressionStream('deflate-raw')` + JVM `0xCAFEBABE` constant-pool analyzer with SARIF/JSON export.
+- Paper 26.3+ api-version and Mojang-mapped bytecode verification (J014, J025, J026):
+  - J014: Flags legacy plugin.yml descriptors declaring modern Paper api-version 26.3+. Paper 26.3 requires paper-plugin.yml for modern Paper features and classloader isolation, while Spigot rejects 26.x declarations.
+  - J025: Detects references to legacy versioned NMS or CraftBukkit packages (net.minecraft.server.v1_... or org.bukkit.craftbukkit.v1_...) when targeting modern Paper 26.x+ (Java 25+), where all legacy versioned relocation shims have been removed.
+  - J026: Flags unversioned Mojang-mapped net.minecraft bytecode calls inside legacy plugin.yml plugins without paper-plugin.yml, preventing runtime ClassNotFoundException crashes on Spigot and pre-1.20.5 servers.
+- Cross-plugin service and event shading conflict matrix (S033, S034):
+  - S033: Scans META-INF/services/ provider interfaces and Bukkit ServicesManager registrations across the plugin set and flags service interfaces shaded across multiple plugins without relocation, preventing split service registration lookups.
+  - S034: Identifies custom Bukkit Event classes shaded unrelocated across multiple plugins, which causes separate static HandlerList instances on independent classloaders and silently drops fired events.
+  - Generates cross-plugin service and event conflict matrices in scan reports and the browser inspector.
+- Zero-backend browser inspector upgrade (docs/index.html): Interactive detection for J014, J025, J026, S033, and S034 with live classloader conflict tables.
 
 ## Requirements
 
@@ -36,37 +38,37 @@ Java 21 or newer. The release JAR is self-contained.
 
 ## Install
 
-Download `pluginscope-0.2.0.jar` from [GitHub Releases](https://github.com/SalyyS1/pluginscope/releases) and run:
+Download `pluginscope-0.3.0.jar` from [GitHub Releases](https://github.com/SalyyS1/pluginscope/releases) and run:
 
 ```bash
-java -jar pluginscope-0.2.0.jar --help
+java -jar pluginscope-0.3.0.jar --help
 ```
 
 ## Quick start
 
 ```bash
 # Audit one plugin JAR against a target Minecraft server version
-java -jar pluginscope-0.2.0.jar jar MyPlugin.jar --target 26.2
+java -jar pluginscope-0.3.0.jar jar MyPlugin.jar --target 26.3
 
 # Check API compatibility against Paper 1.21.4 (downloads and caches paper-api once)
-java -jar pluginscope-0.2.0.jar compat MyPlugin.jar --mc 1.21.4
+java -jar pluginscope-0.3.0.jar compat MyPlugin.jar --mc 1.21.4
 
 # Audit an entire server plugins/ folder for classloader blocks and shading collisions
-java -jar pluginscope-0.2.0.jar stack /srv/mc/plugins
+java -jar pluginscope-0.3.0.jar stack /srv/mc/plugins
 
 # Emit console output AND write OASIS SARIF v2.1.0 in a single run
-java -jar pluginscope-0.2.0.jar stack /srv/mc/plugins --sarif pluginscope.sarif
+java -jar pluginscope-0.3.0.jar stack /srv/mc/plugins --sarif pluginscope.sarif
 
 # Validate a resource pack directory or zip
-java -jar pluginscope-0.2.0.jar pack pack.zip --mc 26.2
+java -jar pluginscope-0.3.0.jar pack pack.zip --mc 26.3
 
-# Print all 70 rules with rationale, remediation, and primary source provenance
-java -jar pluginscope-0.2.0.jar rules
+# Print all rules with rationale, remediation, and primary source provenance
+java -jar pluginscope-0.3.0.jar rules
 ```
 
 ## GitHub Actions & Code Scanning (SARIF v2.1.0)
 
-Use the composite action `SalyyS1/pluginscope@v0.2.0` to gate pull requests and publish shading, packaging, and Paper classloader findings directly to the GitHub **Security -> Code scanning** tab:
+Use the composite action `SalyyS1/pluginscope@v0.3.0` to gate pull requests and publish shading, packaging, and Paper classloader findings directly to the GitHub **Security -> Code scanning** tab:
 
 ```yaml
 name: Plugin Audit
@@ -90,11 +92,11 @@ jobs:
         run: ./gradlew build --no-daemon
 
       - name: Run PluginScope static audit
-        uses: SalyyS1/pluginscope@v0.2.0
+        uses: SalyyS1/pluginscope@v0.3.0
         with:
           command: jar
           path: build/libs
-          target: '1.21.4'
+          target: '26.3'
           fail-on: never
           sarif-file: pluginscope.sarif
 
@@ -109,7 +111,7 @@ jobs:
 Single-JAR audit catching unrelocated `org.bstats`, dual-descriptor dependency drift between `plugin.yml` and `paper-plugin.yml`, server-provided Gson bundling, and leftover JAR signatures:
 
 ```text
-$ java -jar pluginscope-0.2.0.jar jar build/libs/CrateMaster.jar --target 1.21.4
+$ java -jar pluginscope-0.3.0.jar jar build/libs/CrateMaster.jar --target 1.21.4
 
 jar: /workspace/build/libs/CrateMaster.jar
   plugin       CrateMaster
@@ -145,7 +147,7 @@ jar: /workspace/build/libs/CrateMaster.jar
 Multi-JAR `stack` audit catching cross-plugin `PaperPluginClassLoader` isolation failures and unrelocated HikariCP + bStats collisions across installed plugins:
 
 ```text
-$ java -jar pluginscope-0.2.0.jar stack /srv/mc/plugins
+$ java -jar pluginscope-0.3.0.jar stack /srv/mc/plugins
 
 plugins directory: /srv/mc/plugins
   jars             3
@@ -196,7 +198,7 @@ plugins directory: /srv/mc/plugins
   "mcpServers": {
     "pluginscope": {
       "command": "java",
-      "args": ["-jar", "/absolute/path/to/pluginscope-0.2.0.jar", "mcp"]
+      "args": ["-jar", "/absolute/path/to/pluginscope-0.3.0.jar", "mcp"]
     }
   }
 }
@@ -220,7 +222,7 @@ Exposed read-only tools: `scan_jar`, `check_api_compat`, `audit_plugins_dir`, `v
 ./gradlew test shadowJar --no-daemon
 ```
 
-Produces `build/libs/pluginscope-0.2.0.jar` (self-contained shaded CLI) and runs the full JUnit 6 suite against compiled bytecode fixtures.
+Produces `build/libs/pluginscope-0.3.0.jar` (self-contained shaded CLI) and runs the full JUnit 6 suite against compiled bytecode fixtures.
 
 ## Licence
 

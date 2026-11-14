@@ -231,4 +231,48 @@ class JarAuditTest {
         assertEquals(Severity.WARNING, hit.severity)
         assertTrue(hit.detail.contains("Vault")) { hit.detail }
     }
+
+    @Test
+    fun `plugin yml declaring api-version 26_3 without paper-plugin yml warns as J014`() {
+        val jar = FixtureJars.pluginJar(
+            jarName = "modern-in-legacy",
+            descriptor = FixtureJars.descriptor("LegacyModern", "fixtures.clean.CleanPlugin", "26.3"),
+            packagePaths = listOf("fixtures/clean/"),
+        )
+        val report = audit(jar)
+        val finding = report.findings.firstOrNull { it.ruleId == "J014" }
+        assertTrue(finding != null) { "expected J014 in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.WARNING, finding!!.severity)
+        assertTrue(finding.detail.contains("26.3")) { finding.detail }
+    }
+
+    @Test
+    fun `bytecode referencing versioned NMS on Paper 26_3 reports J025 critical`() {
+        val jar = FixtureJars.pluginJar(
+            jarName = "versioned-nms",
+            descriptor = FixtureJars.descriptor("VersionedNms", "fixtures.clean.CleanPlugin", "26.3"),
+            packagePaths = listOf("fixtures/clean/"),
+            generatedClasses = listOf("net/minecraft/server/v1_20_R3/EntityPlayer"),
+        )
+        val report = audit(jar)
+        val finding = report.findings.firstOrNull { it.ruleId == "J025" }
+        assertTrue(finding != null) { "expected J025 in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.CRITICAL, finding!!.severity)
+        assertTrue(finding.detail.contains("Paper 26.x+")) { finding.detail }
+    }
+
+    @Test
+    fun `legacy plugin referencing unversioned Mojang mappings reports J026 critical`() {
+        val jar = FixtureJars.pluginJar(
+            jarName = "mojang-in-legacy",
+            descriptor = FixtureJars.descriptor("MojangLegacy", "fixtures.clean.CleanPlugin", "1.20.4"),
+            packagePaths = listOf("fixtures/clean/"),
+            generatedClasses = listOf("net/minecraft/world/entity/player/Player"),
+        )
+        val report = audit(jar)
+        val finding = report.findings.firstOrNull { it.ruleId == "J026" }
+        assertTrue(finding != null) { "expected J026 in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.CRITICAL, finding!!.severity)
+        assertTrue(finding.detail.contains("Mojang-mapped")) { finding.detail }
+    }
 }

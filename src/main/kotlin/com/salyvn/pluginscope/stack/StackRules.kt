@@ -133,6 +133,30 @@ object StackRules {
             "shared Maven coordinates in the descriptor `libraries:` section.",
     )
 
+    val SERVICE_PROVIDER_SHADING_CONFLICT = Rule(
+        id = "S033",
+        severity = Severity.CRITICAL,
+        title = "Service provider interface or registration shaded across multiple plugins",
+        rationale = "When multiple plugins bundle the same Service provider interface (e.g. from " +
+            "META-INF/services/ or Bukkit ServicesManager/RegisteredServiceProvider) without relocation, " +
+            "service registrations across plugin classloaders fail with ClassCastException or return null " +
+            "because ClassLoader A's Service.class does not equal ClassLoader B's Service.class.",
+        provenance = "META-INF/services provider interfaces and Bukkit ServicesManager registration types compared across installed plugins",
+        fix = "Relocate the service interface and provider under each plugin's namespace, or place the API in a common shared library plugin.",
+    )
+
+    val EVENT_HANDLER_SHADING_CONFLICT = Rule(
+        id = "S034",
+        severity = Severity.CRITICAL,
+        title = "Custom Bukkit Event class shaded across multiple plugins causes dropped events",
+        rationale = "Bukkit custom Event classes define static getHandlerList() and getHandlers() methods. " +
+            "When two plugins shade the same custom Event class unrelocated, each plugin's classloader has a " +
+            "separate HandlerList instance. An event fired by Plugin A will never trigger @EventHandler listeners " +
+            "registered in Plugin B, causing silent event dropping.",
+        provenance = "Classes extending org.bukkit.event.Event or declaring static HandlerList getHandlerList() compared across installed jars",
+        fix = "Relocate custom Event classes or share them through a single common API dependency with join-classpath: true or depend.",
+    )
+
     val JAVA_REQUIREMENT = Rule(
         id = "S040",
         severity = Severity.INFO,
@@ -177,7 +201,8 @@ object StackRules {
         MISSING_HARD_DEPENDENCY, DEPENDENCY_CYCLE, UNDECLARED_PLUGIN_DEPENDENCY,
         ISOLATED_CLASSLOADER_BLOCKED, DUPLICATE_PLUGIN_NAME, DUPLICATE_MAIN_CLASS,
         NAME_SHADOWED_BY_PROVIDES, COMMAND_COLLISION, ALIAS_COLLISION, SHARED_LIBRARY_SKEW,
-        SHARED_LIBRARY_DUPLICATED, TRANSITIVE_SHADING_COLLISION, JAVA_REQUIREMENT,
+        SHARED_LIBRARY_DUPLICATED, TRANSITIVE_SHADING_COLLISION, SERVICE_PROVIDER_SHADING_CONFLICT,
+        EVENT_HANDLER_SHADING_CONFLICT, JAVA_REQUIREMENT,
         LEGACY_PLUGIN_PRESENT, MISSING_SOFT_DEPENDENCY, FOLIA_MIX,
     )
 }

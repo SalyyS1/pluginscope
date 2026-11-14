@@ -46,6 +46,7 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
         checkClassloaderIsolation(plugins, sink)
         checkCommands(plugins, sink)
         checkSharedLibraries(plugins, sink)
+        val (serviceConflicts, eventConflicts) = checkServiceAndEventConflicts(plugins, sink)
         checkRuntime(inspections, plugins, sink)
 
         return ScanReport(
@@ -67,6 +68,8 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
                     ),
                 )
                 put("target", if (foliaTarget) "Folia" else "Paper")
+                put("service conflicts", "$serviceConflicts conflict(s) across audited service providers")
+                put("event handler conflicts", "$eventConflicts conflict(s) across audited custom event classes")
                 for (plugin in plugins.sortedBy { it.name.lowercase() }) {
                     val jar = plugin.jar
                     val descriptor = jar.descriptor
@@ -473,6 +476,63 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
         root == "org/bstats" -> 1
         ServerRuntime.highRiskRootFor(root) != null -> 2
         else -> MIN_CLASSES
+    }
+
+    private fun checkServiceAndEventConflicts(plugins: List<Installed>, sink: FindingSink): Pair<Int, Int> {
+        var serviceConflicts = 0
+        var eventConflicts = 0
+
+        // 1. Service Provider Shading Conflicts (S033)
+        val serviceMap = linkedMapOf<String, MutableList<Pair<Installed, List<String>>>>()
+        for (plugin in plugins) {
+            for ((serviceInterface, impls) in plugin.jar.serviceProviders) {
+                serviceMap.getOrPut(serviceInterface) { mutableListOf() } += (plugin to impls)
+            }
+        }
+
+        for ((serviceInterface, claimants) in serviceMap) {
+            if (claimants.size < 2) continue
+            serviceConflicts++
+            val pluginNames = claimants.map { it.first.name }.distinct()
+            val evidence = claimants.map { (plugin, impls) ->
+                val implText = if (impls.isEmpty()) "(no provider classes)" else impls.joinToString(", ")
+                "${plugin.name} (${plugin.jar.fileName}): $implText"
+            }
+            sink.add(
+                StackRules.SERVICE_PROVIDER_SHADING_CONFLICT,
+                location = serviceInterface,
+                detail = "Service provider interface $serviceInterface is declared by ${claimants.size} plugins: " +
+                    "${pluginNames.joinToString(", ")}. Unrelocated service registrations split across plugin classloaders.",
+                evidence = evidence,
+            )
+        }
+
+        // 2. Custom Bukkit Event HandlerList Split Conflicts (S034)
+        val eventMap = linkedMapOf<String, MutableList<Installed>>()
+        for (plugin in plugins) {
+            for (cls in plugin.jar.classes) {
+                if (cls.isBukkitEvent && !ServerRuntime.isServerNamespace(cls.internalName)) {
+                    eventMap.getOrPut(cls.internalName) { mutableListOf() } += plugin
+                }
+            }
+        }
+
+        for ((eventInternal, claimants) in eventMap) {
+            val distinctPlugins = claimants.distinctBy { it.name.lowercase() }
+            if (distinctPlugins.size < 2) continue
+            eventConflicts++
+            val dotted = eventInternal.replace('/', '.')
+            val evidence = distinctPlugins.map { "${it.name} (${it.jar.fileName})" }
+            sink.add(
+                StackRules.EVENT_HANDLER_SHADING_CONFLICT,
+                location = dotted,
+                detail = "Custom Bukkit Event class $dotted is shaded unrelocated across ${distinctPlugins.size} plugins: " +
+                    "${distinctPlugins.map { it.name }.joinToString(", ")}. Each plugin maintains an isolated static HandlerList, silently dropping fired events.",
+                evidence = evidence,
+            )
+        }
+
+        return serviceConflicts to eventConflicts
     }
 
     private fun checkRuntime(inspections: List<JarInspection>, plugins: List<Installed>, sink: FindingSink) {

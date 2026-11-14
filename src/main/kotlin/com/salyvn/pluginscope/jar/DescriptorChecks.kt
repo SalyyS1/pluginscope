@@ -157,6 +157,18 @@ internal object DescriptorChecks {
                 severityOverride = com.salyvn.pluginscope.core.Severity.INFO,
             )
 
+            McVersions.ApiVersionShape.CURRENT_NUMBERING -> {
+                if (kind == DescriptorKind.LEGACY && McVersions.isAtLeast26_3(apiVersion)) {
+                    sink.add(
+                        JarRules.API_VERSION_PAPER_26_SPIGOT_INCOMPATIBLE,
+                        location = kind.entryName,
+                        detail = "plugin.yml declares modern Paper api-version '$apiVersion'. Paper 26.3+ requires " +
+                            "paper-plugin.yml for 26.3+ features, isolated classloaders, and Mojang mappings; Spigot rejects 26.x declarations.",
+                        evidence = listOf("api-version: '$apiVersion' in plugin.yml"),
+                    )
+                }
+            }
+
             else -> Unit
         }
     }

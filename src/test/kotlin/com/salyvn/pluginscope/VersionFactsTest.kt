@@ -29,6 +29,7 @@ class VersionFactsTest {
         assertEquals(21, McVersions.minimumJavaFor("1.20.5"))
         assertEquals(21, McVersions.minimumJavaFor("1.21.4"))
         assertEquals(25, McVersions.minimumJavaFor("26.2"))
+        assertEquals(25, McVersions.minimumJavaFor("26.3"))
         assertNull(McVersions.minimumJavaFor("none"))
         assertNull(McVersions.minimumJavaFor("nonsense"))
     }
@@ -65,5 +66,16 @@ class VersionFactsTest {
         assertTrue(ServerRuntime.isKotlinRuntime("kotlin/jvm/internal/Intrinsics"))
         assertTrue(ServerRuntime.isKotlinRuntime("kotlinx/coroutines/Job"))
         assertNull(ServerRuntime.providedFor("kotlin/Unit"))
+    }
+
+    @Test
+    fun `Paper 26_3 era facts and helper methods are verified`() {
+        assertTrue(McVersions.isModernPaper("26.3"))
+        assertTrue(McVersions.isAtLeast26_3("26.3"))
+        assertTrue(McVersions.isAtLeast26_3("26.4"))
+        assertTrue(McVersions.isAtLeast26_3("27.1"))
+        assertFalse(McVersions.isAtLeast26_3("26.2"))
+        assertFalse(McVersions.isAtLeast26_3("1.21.4"))
+        assertEquals(25, McVersions.minimumJavaFor("26.3"))
     }
 }

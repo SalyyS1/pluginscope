@@ -81,6 +81,17 @@ object JarRules {
         fix = "Quote the value so it stays exactly as written.",
     )
 
+    val API_VERSION_PAPER_26_SPIGOT_INCOMPATIBLE = Rule(
+        id = "J014",
+        severity = Severity.WARNING,
+        title = "api-version targets modern Paper 26.x+ in legacy plugin.yml",
+        rationale = "Spigot's plugin loader only recognizes historical 1.13 through 1.21 api-version declarations. " +
+            "Declaring 26.x or 26.3 in a legacy plugin.yml causes Spigot to reject the plugin or fall back to pre-1.13 " +
+            "legacy mode. For modern Paper 26.x releases, declare paper-plugin.yml or dual descriptors.",
+        provenance = "Spigot PluginDescriptionFile valid api-version patterns vs Paper 26.x apiVersioning.json",
+        fix = "Migrate to paper-plugin.yml for Paper 26.x+, or declare a dual-descriptor setup with 1.21 fallback in plugin.yml.",
+    )
+
     val DESCRIPTOR_UNKNOWN_KEY = Rule(
         id = "J006",
         severity = Severity.WARNING,
@@ -194,6 +205,28 @@ object JarRules {
         fix = "Relocate org.bstats under your own package in ShadowJar or maven-shade-plugin.",
     )
 
+    val LEGACY_VERSIONED_NMS_ON_MODERN_PAPER = Rule(
+        id = "J025",
+        severity = Severity.CRITICAL,
+        title = "Bytecode references legacy versioned NMS or CraftBukkit package on Paper 26.x+",
+        rationale = "Paper 26.x has removed all legacy versioned package shims (net.minecraft.server.v1_XX_RX and " +
+            "org.bukkit.craftbukkit.v1_XX_RX). Plugins declaring api-version 26.x or running on modern Paper throw " +
+            "ClassNotFoundException upon touching versioned packages.",
+        provenance = "PaperMC modern classloader removal of CraftBukkit versioned relocation shims",
+        fix = "Use the unversioned Bukkit/Paper API or unversioned CraftBukkit/Mojang-mapped classes.",
+    )
+
+    val MOJANG_MAPPED_BYTECODE_IN_LEGACY_DESCRIPTOR = Rule(
+        id = "J026",
+        severity = Severity.CRITICAL,
+        title = "Mojang-mapped net.minecraft bytecode referenced in legacy plugin.yml",
+        rationale = "Unversioned net.minecraft references require Mojang runtime mappings. Legacy plugin.yml plugins " +
+            "deployed on Spigot or pre-1.20.5 Paper servers fail with ClassNotFoundException because Spigot does not " +
+            "provide Mojang-mapped packages to legacy plugins.",
+        provenance = "Spigot runtime obfuscation vs Paper paper-plugin.yml Mojang-mapped runtime classloader",
+        fix = "Migrate to paper-plugin.yml to run with Mojang mappings, or compile against the public Bukkit API.",
+    )
+
     val JAR_HYGIENE = Rule(
         id = "J030",
         severity = Severity.WARNING,
@@ -269,9 +302,10 @@ object JarRules {
     val all = listOf(
         NOT_A_PLUGIN, DESCRIPTOR_INCOMPLETE, DESCRIPTOR_UNPARSEABLE, MAIN_CLASS_MISSING, NAME_ILLEGAL,
         MAIN_IN_SERVER_NAMESPACE, DESCRIPTOR_UNKNOWN_KEY, API_VERSION_ABSENT, API_VERSION_UNKNOWN,
-        UNQUOTED_VERSION_SCALAR, BOTH_DESCRIPTORS, CLASS_VERSION_TOO_NEW, CLASS_VERSION_MIXED,
-        SERVER_NAMESPACE_BUNDLED, PROVIDED_LIBRARY_BUNDLED, UNRELOCATED_LIBRARY,
-        KOTLIN_STDLIB_BUNDLED, BSTATS_UNRELOCATED, JAR_HYGIENE, SIGNATURE_LEFTOVER, DEPENDENCY_SUSPECT,
+        UNQUOTED_VERSION_SCALAR, API_VERSION_PAPER_26_SPIGOT_INCOMPATIBLE, BOTH_DESCRIPTORS,
+        CLASS_VERSION_TOO_NEW, CLASS_VERSION_MIXED, SERVER_NAMESPACE_BUNDLED, PROVIDED_LIBRARY_BUNDLED,
+        UNRELOCATED_LIBRARY, KOTLIN_STDLIB_BUNDLED, BSTATS_UNRELOCATED, LEGACY_VERSIONED_NMS_ON_MODERN_PAPER,
+        MOJANG_MAPPED_BYTECODE_IN_LEGACY_DESCRIPTOR, JAR_HYGIENE, SIGNATURE_LEFTOVER, DEPENDENCY_SUSPECT,
         RUNTIME_LIBRARIES_HINT, PAPER_DESCRIPTOR_DRIFT, UNREACHABLE_BUNDLE, FOLIA_DECLARATION,
     )
 }

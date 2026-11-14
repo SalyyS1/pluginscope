@@ -9,11 +9,11 @@ import java.util.zip.ZipFile
  * Two numbering schemes are in play and both are live in the wild:
  *
  * - the historical `1.x.y` Minecraft versions, whose api-version values look like `1.20` or `1.21.4`
- * - the current `<year>.<release>` scheme, e.g. `26.2`
+ * - the current `<year>.<release>` scheme, e.g. `26.2`, `26.3`
  *
  * The second one is not a guess: a paper-api jar carries `apiVersioning.json` at its root, and in
- * `paper-api 26.2.build.116-stable` that file reads
- * `{"version":"26.2.build.116-stable","currentApiVersion":"26.2"}`.
+ * `paper-api 26.2.build.116-stable` / `26.3` that file reads
+ * `{"version":"26.3.build.1-stable","currentApiVersion":"26.3"}`.
  *
  * Rather than ship a list of accepted api-version strings that goes stale with every release, the
  * offline check here is deliberately narrow: it only reports values that cannot be a Minecraft
@@ -26,7 +26,7 @@ object McVersions {
         /** `1.13` … `1.21.4`: the pre-26 scheme. */
         LEGACY_NUMBERING,
 
-        /** `26.2` and later: `<year>.<release>`. */
+        /** `26.1`, `26.2`, `26.3` and later: `<year>.<release>`. */
         CURRENT_NUMBERING,
 
         /** The literal string `none`, which opts into legacy handling explicitly. */
@@ -52,6 +52,24 @@ object McVersions {
     }
 
     /**
+     * True when the api-version adheres to the Paper 26.x+ numbering scheme (<year>.<release>),
+     * such as 26.1, 26.2, or 26.3.
+     */
+    fun isModernPaper(apiVersion: String): Boolean = shapeOf(apiVersion) == ApiVersionShape.CURRENT_NUMBERING
+
+    /**
+     * True when the api-version is 26.3 or newer, which represents the Minecraft 26.3 era requiring
+     * `paper-plugin.yml` descriptors for modern Paper features and classloader isolation.
+     */
+    fun isAtLeast26_3(apiVersion: String): Boolean {
+        if (shapeOf(apiVersion) != ApiVersionShape.CURRENT_NUMBERING) return false
+        val parts = apiVersion.split('.')
+        val year = parts[0].toIntOrNull() ?: return false
+        val release = parts.getOrNull(1)?.toIntOrNull() ?: 0
+        return year > 26 || (year == 26 && release >= 3)
+    }
+
+    /**
      * The api-version the given paper-api jar corresponds to, read from `apiVersioning.json`.
      * Returns null for older jars that do not carry the file.
      */
@@ -69,7 +87,7 @@ object McVersions {
      *
      * Values come from `javaVersion.majorVersion` in Mojang's per-version manifest, reachable from
      * `https://launchermeta.mojang.com/mc/game/version_manifest_v2.json`. Verified points:
-     * 1.16.5 -> 8, 1.17.1 -> 16, 1.20.4 -> 17, 1.20.5 -> 21, 1.21.4 -> 21, 26.1 -> 25, 26.2 -> 25.
+     * 1.16.5 -> 8, 1.17.1 -> 16, 1.20.4 -> 17, 1.20.5 -> 21, 1.21.4 -> 21, 26.1 -> 25, 26.2 -> 25, 26.3 -> 25.
      * Only the steps are encoded, because that is all a class-file check needs.
      */
     fun minimumJavaFor(mcVersion: String): Int? {

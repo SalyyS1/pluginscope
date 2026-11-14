@@ -27,6 +27,7 @@ object JarReader {
         val classes = mutableListOf<ClassEntry>()
         val resources = mutableListOf<ResourceEntry>()
         val descriptors = mutableMapOf<DescriptorKind, PluginDescriptor>()
+        val serviceProviders = mutableMapOf<String, List<String>>()
         val uses = mutableListOf<MemberUse>()
         val errors = mutableListOf<String>()
         var manifest = emptyMap<String, String>()
@@ -56,6 +57,23 @@ object JarReader {
                         resources += ResourceEntry(entry.name, entry.size, entry.compressedSize, false)
                     }
 
+                    entry.name.startsWith("META-INF/services/") -> {
+                        val iface = entry.name.removePrefix("META-INF/services/").trim()
+                        if (iface.isNotEmpty() && !iface.contains('/')) {
+                            try {
+                                val impls = zip.getInputStream(entry).use { it.readBytes().decodeToString() }
+                                    .lineSequence()
+                                    .map { it.substringBefore('#').trim() }
+                                    .filter { it.isNotEmpty() }
+                                    .toList()
+                                serviceProviders[iface] = impls
+                            } catch (_: Exception) {
+                                // Service provider file parse errors do not abort jar reading
+                            }
+                        }
+                        resources += ResourceEntry(entry.name, entry.size, entry.compressedSize, false)
+                    }
+
                     entry.name == "META-INF/MANIFEST.MF" -> {
                         manifest = readManifest(zip.getInputStream(entry).use { it.readBytes() })
                         resources += ResourceEntry(entry.name, entry.size, entry.compressedSize, false)
@@ -74,6 +92,7 @@ object JarReader {
             resources = resources,
             descriptors = descriptors,
             memberUses = uses,
+            serviceProviders = serviceProviders,
             readErrors = errors,
             manifest = manifest,
         )

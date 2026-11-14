@@ -23,6 +23,15 @@ data class ClassEntry(
     val deprecatedMembers: Set<String>,
 ) {
     val packageName: String get() = internalName.substringBeforeLast('/', "")
+
+    /**
+     * True when this class represents a Bukkit custom event: it either inherits directly from
+     * `org/bukkit/event/Event` or implements the standard `static HandlerList getHandlerList()` contract.
+     */
+    val isBukkitEvent: Boolean
+        get() = superName == "org/bukkit/event/Event" ||
+            superName == "org.bukkit.event.Event" ||
+            methods.any { it.startsWith("getHandlerList()Lorg/bukkit/event/HandlerList;") }
 }
 
 /** A non-class jar entry. Sizes come from the zip directory, so no decompression is needed. */
@@ -72,6 +81,8 @@ data class JarInspection(
     val resources: List<ResourceEntry>,
     val descriptors: Map<DescriptorKind, PluginDescriptor>,
     val memberUses: List<MemberUse>,
+    /** Service provider definitions under `META-INF/services/`: interface to implementation classes. */
+    val serviceProviders: Map<String, List<String>> = emptyMap(),
     /** Entries that could not be parsed. A corrupt class is a finding, not a crash. */
     val readErrors: List<String>,
     val manifest: Map<String, String>,

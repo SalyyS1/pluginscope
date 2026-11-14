@@ -194,6 +194,31 @@ object FixtureJars {
         return writer.toByteArray()
     }
 
+    fun eventClass(
+        internalName: String,
+        majorVersion: Int = 65,
+    ): ByteArray {
+        val writer = ClassWriter(0)
+        writer.visit(majorVersion, Opcodes.ACC_PUBLIC, internalName, null, "org/bukkit/event/Event", null)
+        writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+            visitCode()
+            visitVarInsn(Opcodes.ALOAD, 0)
+            visitMethodInsn(Opcodes.INVOKESPECIAL, "org/bukkit/event/Event", "<init>", "()V", false)
+            visitInsn(Opcodes.RETURN)
+            visitMaxs(1, 1)
+            visitEnd()
+        }
+        writer.visitMethod(Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC, "getHandlerList", "()Lorg/bukkit/event/HandlerList;", null, null).apply {
+            visitCode()
+            visitInsn(Opcodes.ACONST_NULL)
+            visitInsn(Opcodes.ARETURN)
+            visitMaxs(1, 0)
+            visitEnd()
+        }
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+
     private fun without(bytes: ByteArray, methodNames: Set<String>): ByteArray {
         val writer = ClassWriter(0)
         ClassReader(bytes).accept(

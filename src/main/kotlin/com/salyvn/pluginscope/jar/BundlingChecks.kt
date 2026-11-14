@@ -80,6 +80,60 @@ internal object BundlingChecks {
         }
 
         checkClassVersions(jar, targetJava, sink)
+        checkMojangAndVersionedBytecode(jar, targetJava, sink)
+    }
+
+    private fun checkMojangAndVersionedBytecode(jar: JarInspection, targetJava: Int?, sink: FindingSink) {
+        val descriptor = jar.descriptor
+        val isModernPaper = descriptor?.apiVersion?.let {
+            com.salyvn.pluginscope.data.McVersions.shapeOf(it) == com.salyvn.pluginscope.data.McVersions.ApiVersionShape.CURRENT_NUMBERING
+        } == true || (targetJava != null && targetJava >= 25)
+
+        // 1. Check for legacy versioned NMS / CraftBukkit references (net/minecraft/server/v1_*, org/bukkit/craftbukkit/v1_*)
+        val versionedUses = jar.memberUses.filter {
+            it.owner.startsWith("net/minecraft/server/v1_") || it.owner.startsWith("org/bukkit/craftbukkit/v1_")
+        }
+        val versionedClasses = jar.classes.filter {
+            it.internalName.startsWith("net/minecraft/server/v1_") || it.internalName.startsWith("org/bukkit/craftbukkit/v1_") ||
+                it.superName?.let { s -> s.startsWith("net/minecraft/server/v1_") || s.startsWith("org/bukkit/craftbukkit/v1_") } == true ||
+                it.interfaces.any { iface -> iface.startsWith("net/minecraft/server/v1_") || iface.startsWith("org/bukkit/craftbukkit/v1_") }
+        }
+
+        if (isModernPaper && (versionedUses.isNotEmpty() || versionedClasses.isNotEmpty())) {
+            val sampleSites = (versionedUses.map { it.render() } +
+                versionedClasses.map { it.internalName.replace('/', '.') }).distinct().take(4)
+            sink.add(
+                JarRules.LEGACY_VERSIONED_NMS_ON_MODERN_PAPER,
+                location = jar.fileName,
+                detail = "Plugin targets modern Paper (${descriptor?.apiVersion ?: "Java $targetJava"}) but references " +
+                    "legacy versioned NMS or CraftBukkit package(s). Paper 26.x+ has removed versioned package relocation shims.",
+                evidence = sampleSites,
+            )
+        }
+
+        // 2. Check for unversioned Mojang-mapped bytecode in legacy plugin.yml (without paper-plugin.yml)
+        val hasPaperDescriptor = com.salyvn.pluginscope.core.DescriptorKind.PAPER in jar.descriptors
+        if (descriptor?.kind == com.salyvn.pluginscope.core.DescriptorKind.LEGACY && !hasPaperDescriptor) {
+            val mojangUses = jar.memberUses.filter {
+                it.owner.startsWith("net/minecraft/") && !it.owner.contains("/v1_")
+            }
+            val mojangClasses = jar.classes.filter {
+                (it.internalName.startsWith("net/minecraft/") && !it.internalName.contains("/v1_")) ||
+                    (it.superName?.let { s -> s.startsWith("net/minecraft/") && !s.contains("/v1_") } == true) ||
+                    it.interfaces.any { iface -> iface.startsWith("net/minecraft/") && !iface.contains("/v1_") }
+            }
+            if (mojangUses.isNotEmpty() || mojangClasses.isNotEmpty()) {
+                val sampleSites = (mojangUses.map { it.render() } +
+                    mojangClasses.map { it.internalName.replace('/', '.') }).distinct().take(4)
+                sink.add(
+                    JarRules.MOJANG_MAPPED_BYTECODE_IN_LEGACY_DESCRIPTOR,
+                    location = jar.fileName,
+                    detail = "Legacy plugin.yml plugin references unversioned Mojang-mapped classes. Spigot and pre-1.20.5 " +
+                        "servers do not map or expose net.minecraft to legacy plugin classloaders.",
+                    evidence = sampleSites,
+                )
+            }
+        }
     }
 
     private fun checkClassVersions(jar: JarInspection, targetJava: Int?, sink: FindingSink) {

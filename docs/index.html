@@ -984,6 +984,43 @@
           [], "Declare api-version (for example '1.21.4' or '26.2').");
       }
 
+      // J014: api-version 26.3+ in legacy plugin.yml requires paper-plugin.yml
+      if (d.kind === "plugin.yml" && d.apiVersion && /^26\.[3-9]|^[2-9]\d+\./.test(d.apiVersion) && !jar.descriptors["paper-plugin.yml"]) {
+        add("J014", "warning", "api-version 26.3+ requires paper-plugin.yml", prefix + d.kind,
+          `plugin.yml declares modern Paper api-version '${d.apiVersion}'. Paper 26.3+ requires paper-plugin.yml for 26.3+ features, isolated classloaders, and Mojang mappings; Spigot rejects 26.x declarations.`,
+          [`api-version: '${d.apiVersion}' in plugin.yml`],
+          "Migrate to paper-plugin.yml for Paper 26.3+, or keep plugin.yml at 1.21.4 for legacy compatibility.");
+      }
+
+      // J025: Legacy versioned NMS on Paper 26.x+
+      const isModernPaper = (d.apiVersion && /^2[6-9]\./.test(d.apiVersion)) || options.targetJava >= 25;
+      const versionedClasses = jar.classes.filter(c =>
+        c.internalName.startsWith("net/minecraft/server/v1_") || c.internalName.startsWith("org/bukkit/craftbukkit/v1_") ||
+        (c.superName && (c.superName.startsWith("net/minecraft/server/v1_") || c.superName.startsWith("org/bukkit/craftbukkit/v1_"))) ||
+        c.referencedClasses.some(r => r.startsWith("net/minecraft/server/v1_") || r.startsWith("org/bukkit/craftbukkit/v1_"))
+      );
+      if (isModernPaper && versionedClasses.length > 0) {
+        add("J025", "critical", "Bytecode references legacy versioned NMS on Paper 26.x+", jar.fileName,
+          `Plugin targets modern Paper (${d.apiVersion || "Java " + options.targetJava}) but references legacy versioned NMS or CraftBukkit package(s). Paper 26.x+ has removed versioned package relocation shims.`,
+          versionedClasses.slice(0, 4).map(c => c.internalName.replace(/\//g, ".")),
+          "Use the unversioned Bukkit/Paper API or unversioned CraftBukkit/Mojang-mapped classes.");
+      }
+
+      // J026: Unversioned Mojang mappings in legacy plugin.yml without paper-plugin.yml
+      if (d.kind === "plugin.yml" && !jar.descriptors["paper-plugin.yml"]) {
+        const mojangClasses = jar.classes.filter(c =>
+          (c.internalName.startsWith("net/minecraft/") && !c.internalName.includes("/v1_")) ||
+          (c.superName && c.superName.startsWith("net/minecraft/") && !c.superName.includes("/v1_")) ||
+          c.referencedClasses.some(r => r.startsWith("net/minecraft/") && !r.includes("/v1_"))
+        );
+        if (mojangClasses.length > 0) {
+          add("J026", "critical", "Mojang-mapped net.minecraft bytecode referenced in legacy plugin.yml", jar.fileName,
+            "Legacy plugin.yml plugin references unversioned Mojang-mapped classes. Spigot and pre-1.20.5 servers do not map or expose net.minecraft to legacy plugin classloaders.",
+            mojangClasses.slice(0, 4).map(c => c.internalName.replace(/\//g, ".")),
+            "Add paper-plugin.yml to run with Mojang mappings, or compile against the public Bukkit API.");
+        }
+      }
+
       if (options.targetJava > 0 && jar.maxMajor > javaToMajor(options.targetJava)) {
         add("J010", "critical", "Compiled for a newer Java release than target server",
           jar.fileName,
@@ -1236,6 +1273,55 @@
             add("S031", "info", "Identical unrelocated library duplicated across plugins",
               dotted, `Identical copy shipped by ${list.length} plugins.`,
               ev, "Move shared dependencies to descriptor libraries: or relocate.");
+          }
+        }
+
+        // S033: Service provider interface shading conflict
+        const serviceProviders = new Map();
+        for (const p of plugins) {
+          for (const res of p.resources) {
+            if (res.name.startsWith("META-INF/services/") && !res.isDirectory) {
+              const iface = res.name.slice("META-INF/services/".length).trim();
+              if (iface && !iface.includes("/")) {
+                const list = serviceProviders.get(iface) || [];
+                list.push(p.descriptor.name);
+                serviceProviders.set(iface, list);
+              }
+            }
+          }
+        }
+        for (const [iface, claimants] of serviceProviders.entries()) {
+          const uniqueClaimants = Array.from(new Set(claimants));
+          if (uniqueClaimants.length > 1) {
+            add("S033", "critical", "Service provider interface shaded across multiple plugins",
+              iface,
+              `Service provider interface ${iface} is declared by ${uniqueClaimants.length} plugins: ${uniqueClaimants.join(", ")}. Service registrations split across plugin classloaders.`,
+              uniqueClaimants.map(n => `${n} declares META-INF/services/${iface}`),
+              "Relocate service interfaces or declare shared dependencies in descriptor libraries:.");
+          }
+        }
+
+        // S034: Custom Bukkit Event HandlerList split
+        const eventClasses = new Map();
+        for (const p of plugins) {
+          for (const c of p.classes) {
+            const isEvent = (c.superName === "org/bukkit/event/Event" || c.superName === "org.bukkit.event.Event");
+            if (isEvent && !c.internalName.startsWith("org/bukkit/") && !c.internalName.startsWith("io/papermc/paper/")) {
+              const list = eventClasses.get(c.internalName) || [];
+              list.push(p.descriptor.name);
+              eventClasses.set(c.internalName, list);
+            }
+          }
+        }
+        for (const [internalName, claimants] of eventClasses.entries()) {
+          const uniqueClaimants = Array.from(new Set(claimants));
+          if (uniqueClaimants.length > 1) {
+            const dotted = internalName.replace(/\//g, ".");
+            add("S034", "critical", "Custom Bukkit Event class shaded across multiple plugins causes dropped events",
+              dotted,
+              `Custom Bukkit Event class ${dotted} is shaded unrelocated across ${uniqueClaimants.length} plugins: ${uniqueClaimants.join(", ")}. Each plugin maintains an isolated static HandlerList, silently dropping fired events.`,
+              uniqueClaimants.map(n => `${n} bundles ${dotted}`),
+              "Relocate custom Event classes or share them through a common API dependency.");
           }
         }
       }

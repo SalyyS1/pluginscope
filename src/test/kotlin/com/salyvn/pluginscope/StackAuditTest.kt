@@ -321,4 +321,54 @@ class StackAuditTest {
         val blocked = report.findings.filter { it.ruleId == "S004" }.map { it.location }.toSet()
         assertEquals(setOf("IsolatedCaller -> ClosedCore", "LegacyCaller -> ClosedCore"), blocked)
     }
+
+    @Test
+    fun `service provider interface shaded across multiple plugins reports S033 critical`(@TempDir directory: Path) {
+        val serviceBytes = "fixtures.clean.CleanPlugin\n".toByteArray()
+        val jar1 = FixtureJars.pluginJar(
+            jarName = "service-provider-a",
+            descriptor = FixtureJars.descriptor("ProviderA", "fixtures.clean.CleanPlugin", "26.2"),
+            packagePaths = listOf("fixtures/clean/"),
+            extraEntries = mapOf("META-INF/services/com.example.api.StorageProvider" to serviceBytes),
+        )
+        val jar2 = FixtureJars.pluginJar(
+            jarName = "service-provider-b",
+            descriptor = FixtureJars.descriptor("ProviderB", "fixtures.clean.CleanPlugin", "26.2"),
+            packagePaths = listOf("fixtures/clean/"),
+            extraEntries = mapOf("META-INF/services/com.example.api.StorageProvider" to serviceBytes),
+        )
+        install(directory, jar1, jar2)
+
+        val report = audit(directory)
+        val finding = report.findings.firstOrNull { it.ruleId == "S033" }
+        assertTrue(finding != null) { "expected S033 in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.CRITICAL, finding!!.severity)
+        assertEquals("com.example.api.StorageProvider", finding.location)
+        assertTrue(report.facts.containsKey("service conflicts"))
+    }
+
+    @Test
+    fun `custom Bukkit Event class shaded across multiple plugins reports S034 critical`(@TempDir directory: Path) {
+        val eventBytes = FixtureJars.eventClass("com/example/api/CustomTestEvent")
+        val jar1 = FixtureJars.pluginJar(
+            jarName = "event-plugin-a",
+            descriptor = FixtureJars.descriptor("EventPluginA", "fixtures.clean.CleanPlugin", "26.2"),
+            packagePaths = listOf("fixtures/clean/"),
+            extraEntries = mapOf("com/example/api/CustomTestEvent.class" to eventBytes),
+        )
+        val jar2 = FixtureJars.pluginJar(
+            jarName = "event-plugin-b",
+            descriptor = FixtureJars.descriptor("EventPluginB", "fixtures.clean.CleanPlugin", "26.2"),
+            packagePaths = listOf("fixtures/clean/"),
+            extraEntries = mapOf("com/example/api/CustomTestEvent.class" to eventBytes),
+        )
+        install(directory, jar1, jar2)
+
+        val report = audit(directory)
+        val finding = report.findings.firstOrNull { it.ruleId == "S034" }
+        assertTrue(finding != null) { "expected S034 in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.CRITICAL, finding!!.severity)
+        assertEquals("com.example.api.CustomTestEvent", finding.location)
+        assertTrue(report.facts.containsKey("event handler conflicts"))
+    }
 }
