@@ -1,0 +1,1706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PluginScope Browser JAR Classloader &amp; Shading Inspector</title>
+  <meta name="description" content="Client-side Minecraft plugin JAR classloader isolation, transitive shading collision, and bytecode inspector. Runs offline in your browser with zero uploads.">
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --panel: #111827;
+      --panel-alt: #172033;
+      --border: #25324a;
+      --text: #e5edf8;
+      --muted: #93a4bd;
+      --accent: #38bdf8;
+      --accent-dim: rgba(56, 189, 248, 0.14);
+      --blocker: #f43f5e;
+      --critical: #fb7185;
+      --warning: #fbbf24;
+      --info: #60a5fa;
+      --ok: #34d399;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      line-height: 1.5;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 20px 64px;
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 1.55rem;
+      letter-spacing: -0.02em;
+    }
+    .brand p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 0.94rem;
+      max-width: 720px;
+    }
+    .nav-links {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .pill-link {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      padding: 7px 12px;
+      border-radius: 6px;
+      font-size: 0.84rem;
+      font-family: var(--mono);
+    }
+    .pill-link:hover {
+      border-color: var(--accent);
+      text-decoration: none;
+    }
+    .controls-grid {
+      display: grid;
+      grid-template-columns: 1.5fr 1fr;
+      gap: 16px;
+      margin-top: 22px;
+    }
+    @media (max-width: 860px) {
+      .controls-grid { grid-template-columns: 1fr; }
+    }
+    .dropzone {
+      border: 2px dashed var(--border);
+      background: var(--panel);
+      border-radius: 10px;
+      padding: 26px 22px;
+      text-align: center;
+      transition: border-color 0.15s, background 0.15s;
+      cursor: pointer;
+    }
+    .dropzone.dragover {
+      border-color: var(--accent);
+      background: var(--accent-dim);
+    }
+    .dropzone h2 {
+      margin: 0 0 6px;
+      font-size: 1.08rem;
+    }
+    .dropzone p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+    .preset-box {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: 10px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .preset-box h3 {
+      margin: 0;
+      font-size: 0.95rem;
+      color: var(--text);
+    }
+    .preset-box p {
+      margin: 4px 0 0;
+      font-size: 0.83rem;
+      color: var(--muted);
+    }
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    button, select {
+      font-family: var(--sans);
+      font-size: 0.84rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--panel-alt);
+      color: var(--text);
+      padding: 8px 12px;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    button.primary {
+      background: #0284c7;
+      border-color: #0ea5e9;
+      color: #fff;
+      font-weight: 600;
+    }
+    button.primary:hover { background: #0369a1; }
+    .toolbar {
+      margin-top: 18px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .toolbar-group {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .stat-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+    .stat-label {
+      font-size: 0.76rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+    }
+    .stat-val {
+      margin-top: 4px;
+      font-size: 1.45rem;
+      font-weight: 700;
+      font-family: var(--mono);
+    }
+    .section-title {
+      margin: 28px 0 12px;
+      font-size: 1.05rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.86rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th {
+      background: var(--panel-alt);
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    tr:last-child td { border-bottom: none; }
+    code {
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      background: rgba(255, 255, 255, 0.06);
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+    .tag {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      font-weight: 600;
+      margin: 2px 4px 2px 0;
+    }
+    .tag-paper { background: rgba(56, 189, 248, 0.16); color: #7dd3fc; border: 1px solid rgba(56, 189, 248, 0.35); }
+    .tag-legacy { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); }
+    .tag-hazard { background: rgba(244, 63, 94, 0.16); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.4); }
+    .tag-ok { background: rgba(52, 211, 153, 0.14); color: #6ee7b7; border: 1px solid rgba(52, 211, 153, 0.35); }
+    .findings-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .finding {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-left-width: 4px;
+      border-radius: 8px;
+      padding: 13px 16px;
+    }
+    .finding.sev-blocker { border-left-color: var(--blocker); }
+    .finding.sev-critical { border-left-color: var(--critical); }
+    .finding.sev-warning { border-left-color: var(--warning); }
+    .finding.sev-info { border-left-color: var(--info); }
+    .finding-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .sev-badge {
+      font-family: var(--mono);
+      font-size: 0.73rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 2px 7px;
+      border-radius: 4px;
+    }
+    .sev-blocker .sev-badge { background: rgba(244, 63, 94, 0.22); color: #fda4af; }
+    .sev-critical .sev-badge { background: rgba(251, 113, 133, 0.2); color: #fecdd3; }
+    .sev-warning .sev-badge { background: rgba(251, 191, 36, 0.18); color: #fde68a; }
+    .sev-info .sev-badge { background: rgba(96, 165, 250, 0.18); color: #bfdbfe; }
+    .rule-id {
+      font-family: var(--mono);
+      font-weight: 700;
+      color: var(--accent);
+      font-size: 0.86rem;
+    }
+    .finding-title { font-weight: 600; font-size: 0.93rem; }
+    .finding-loc {
+      margin-left: auto;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+    .finding-detail {
+      font-size: 0.87rem;
+      color: var(--text);
+      margin: 4px 0;
+    }
+    .finding-evidence {
+      margin: 6px 0 0;
+      padding-left: 18px;
+      font-family: var(--mono);
+      font-size: 0.79rem;
+      color: var(--muted);
+    }
+    .finding-fix {
+      margin-top: 7px;
+      font-size: 0.82rem;
+      color: #a7f3d0;
+    }
+    .empty-banner {
+      padding: 24px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--muted);
+      text-align: center;
+      font-size: 0.9rem;
+    }
+    footer {
+      margin-top: 44px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.82rem;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 12px;
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <h1>PluginScope Browser JAR Classloader &amp; Shading Inspector</h1>
+      <p>
+        Zero-backend static auditor for Paper, Folia, and Spigot plugin JARs. Parses ZIP central directories,
+        <code>paper-plugin.yml</code> / <code>plugin.yml</code> descriptors, and JVM <code>0xCAFEBABE</code>
+        class constant pools locally in your browser without uploading files anywhere.
+      </p>
+    </div>
+    <div class="nav-links">
+      <a class="pill-link" href="https://github.com/SalyyS1/pluginscope">GitHub Repository</a>
+      <a class="pill-link" href="https://github.com/SalyyS1/pluginscope/releases/latest">Download CLI v0.2.0</a>
+      <a class="pill-link" href="https://salyys1.github.io/foliascan/">FoliaScan</a>
+      <a class="pill-link" href="https://salyys1.github.io/serverdoctor/">ServerDoctor</a>
+    </div>
+  </header>
+
+  <div class="controls-grid">
+    <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Select one or more plugin JAR files">
+      <input type="file" id="fileInput" accept=".jar,.zip" multiple style="display:none">
+      <h2>Drop one `.jar` or an entire `plugins/` set of `.jar` files here</h2>
+      <p>Drop a single JAR for packaging &amp; descriptor drift checks, or drop 2+ JARs to audit cross-plugin classloader isolation and transitive shading collisions.</p>
+    </div>
+
+    <div class="preset-box">
+      <div>
+        <h3>Interactive In-Browser Binary Demos</h3>
+        <p>Synthesizes valid `.jar` archives with JVM `.class` constant pools in memory and runs the binary inspector.</p>
+      </div>
+      <div class="btn-row">
+        <button class="primary" id="btnDemoStack" type="button">Demo: 3-JAR Shading &amp; Paper Classloader Collision</button>
+        <button id="btnDemoSingle" type="button">Demo: Single-JAR Unrelocated bStats + Drift</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="toolbar-group">
+      <label for="targetJava">Target Server Java:</label>
+      <select id="targetJava">
+        <option value="21" selected>Java 21 (MC 1.20.5 - 1.21.x)</option>
+        <option value="25">Java 25 (MC 26.x)</option>
+        <option value="17">Java 17 (MC 1.18 - 1.20.4)</option>
+        <option value="0">Any (do not enforce)</option>
+      </select>
+      <label for="sevFilter">Filter Severity:</label>
+      <select id="sevFilter">
+        <option value="all" selected>All findings</option>
+        <option value="blocker">Blocker only</option>
+        <option value="critical">Critical &amp; above</option>
+        <option value="warning">Warning &amp; above</option>
+      </select>
+      <label><input type="checkbox" id="foliaMode"> Folia server target</label>
+    </div>
+    <div class="toolbar-group">
+      <button id="btnExportSarif" type="button" disabled>Export SARIF v2.1.0</button>
+      <button id="btnExportJson" type="button" disabled>Export JSON</button>
+    </div>
+  </div>
+
+  <div class="stats" id="statsGrid">
+    <div class="stat-card"><div class="stat-label">Loaded JARs</div><div class="stat-val" id="statJars">0</div></div>
+    <div class="stat-card"><div class="stat-label">Parsed Classes</div><div class="stat-val" id="statClasses">0</div></div>
+    <div class="stat-card"><div class="stat-label">Required Java</div><div class="stat-val" id="statJava">-</div></div>
+    <div class="stat-card"><div class="stat-label">Blocker / Critical</div><div class="stat-val" id="statCrit">0</div></div>
+    <div class="stat-card"><div class="stat-label">Warnings / Info</div><div class="stat-val" id="statWarn">0</div></div>
+  </div>
+
+  <div class="section-title">
+    <span>Plugin Classloader &amp; Shaded Package Matrix</span>
+  </div>
+  <div id="matrixContainer" class="empty-banner">
+    Drop `.jar` files above or click one of the binary demos to inspect classloader visibility and shaded package namespaces.
+  </div>
+
+  <div class="section-title">
+    <span>Diagnostic Findings</span>
+    <span id="findingCountLabel" style="font-size:0.84rem;color:var(--muted);font-family:var(--mono)">0 findings</span>
+  </div>
+  <div id="findingsContainer" class="empty-banner">
+    No findings yet.
+  </div>
+
+  <footer>
+    <div>PluginScope v0.2.0 | Pure client-side ZIP central directory + JVM bytecode constant-pool inspector (Apache-2.0)</div>
+    <div>Companion tools: <a href="https://github.com/SalyyS1/foliascan">foliascan</a> | <a href="https://github.com/SalyyS1/serverdoctor">serverdoctor</a> | <a href="https://github.com/SalyyS1/minecraftkit">minecraftkit</a></div>
+  </footer>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const SERVER_NAMESPACES = [
+    ["org/bukkit/craftbukkit", "CraftBukkit server internals"],
+    ["org/bukkit", "Bukkit API provided by the server"],
+    ["io/papermc/paper", "Paper API provided by the server"],
+    ["com/destroystokyo/paper", "Legacy Paper API provided by the server"],
+    ["org/spigotmc", "Spigot API provided by the server"],
+    ["net/minecraft", "Minecraft server internals"],
+    ["com/mojang/authlib", "Mojang authlib provided by the server"],
+    ["com/mojang/datafixers", "Mojang DataFixerUpper provided by the server"]
+  ];
+
+  const PROVIDED_LIBS = [
+    ["net/kyori/adventure", "net.kyori:adventure-api 5.2.0"],
+    ["net/kyori/examination", "net.kyori:examination-api 1.3.0"],
+    ["net/kyori/option", "net.kyori:option 1.1.0"],
+    ["com/google/common", "com.google.guava:guava 33.6.0-jre"],
+    ["com/google/gson", "com.google.code.gson:gson 2.14.0"],
+    ["org/yaml/snakeyaml", "org.yaml:snakeyaml 2.2"],
+    ["org/joml", "org.joml:joml 1.10.8"],
+    ["it/unimi/dsi/fastutil", "it.unimi.dsi:fastutil 8.5.18"],
+    ["org/apache/logging/log4j", "org.apache.logging.log4j:log4j-api 2.26.0"],
+    ["org/slf4j", "org.slf4j:slf4j-api 2.0.17"],
+    ["com/mojang/brigadier", "com.mojang:brigadier 1.3.10"],
+    ["net/md_5/bungee", "net.md-5:bungeecord-chat"]
+  ];
+
+  const HIGH_RISK_ROOTS = [
+    ["org/bstats", "bStats Metrics enforces relocation at startup and collides across shared classloaders"],
+    ["net/kyori", "Kyori Adventure crosses the Paper API boundary; unrelocated copies cause LinkageError"],
+    ["com/zaxxer/hikari", "HikariCP pool, MBean and SLF4J bindings collide across shared plugin classloaders"],
+    ["com/google/gson", "Google Gson is provided by Paper; unrelocated copies clash across plugin API calls"],
+    ["org/yaml/snakeyaml", "SnakeYAML 1.x vs 2.x Constructor and LoaderOptions ABIs break when shaded unrelocated"],
+    ["org/slf4j", "SLF4J logger bindings split or throw LinkageError when shaded unrelocated"],
+    ["com/github/benmanes/caffeine", "Caffeine cache node classes clash across overlapping plugin classloaders"],
+    ["io/netty", "Netty channel and ByteBuf types collide with the server network stack"]
+  ];
+
+  const SEVERITY_RANK = { blocker: 4, critical: 3, warning: 2, info: 1 };
+
+  function majorToJava(major) {
+    if (!major || major < 45) return null;
+    return major - 44;
+  }
+
+  function javaToMajor(javaRel) {
+    return javaRel + 44;
+  }
+
+  function startsWithPkg(name, root) {
+    return name === root || name.startsWith(root + "/");
+  }
+
+  function matchTable(name, table) {
+    for (const [root, info] of table) {
+      if (startsWithPkg(name, root)) return { root, info };
+    }
+    return null;
+  }
+
+  // Pure browser ZIP Central Directory + Deflate reader
+  async function readZipEntries(arrayBuffer) {
+    const bytes = new Uint8Array(arrayBuffer);
+    const view = new DataView(arrayBuffer);
+    let eocdPos = -1;
+    const minPos = Math.max(0, bytes.length - 65557);
+    for (let i = bytes.length - 22; i >= minPos; i--) {
+      if (view.getUint32(i, true) === 0x06054b50) {
+        eocdPos = i;
+        break;
+      }
+    }
+    if (eocdPos < 0) throw new Error("Not a valid JAR/ZIP archive (missing End of Central Directory).");
+
+    const cdCount = view.getUint16(eocdPos + 10, true);
+    const cdOffset = view.getUint32(eocdPos + 16, true);
+    const decoder = new TextDecoder("utf-8");
+    const entries = [];
+    let ptr = cdOffset;
+
+    for (let i = 0; i < cdCount && ptr + 46 <= bytes.length; i++) {
+      if (view.getUint32(ptr, true) !== 0x02014b50) break;
+      const method = view.getUint16(ptr + 10, true);
+      const compSize = view.getUint32(ptr + 20, true);
+      const uncompSize = view.getUint32(ptr + 24, true);
+      const nameLen = view.getUint16(ptr + 28, true);
+      const extraLen = view.getUint16(ptr + 30, true);
+      const commentLen = view.getUint16(ptr + 32, true);
+      const localHeaderOffset = view.getUint32(ptr + 42, true);
+      const name = decoder.decode(bytes.subarray(ptr + 46, ptr + 46 + nameLen));
+      ptr += 46 + nameLen + extraLen + commentLen;
+
+      entries.push({
+        name,
+        method,
+        compSize,
+        uncompSize,
+        localHeaderOffset,
+        isDirectory: name.endsWith("/")
+      });
+    }
+
+    async function extractBytes(entry) {
+      const lh = entry.localHeaderOffset;
+      if (lh + 30 > bytes.length || view.getUint32(lh, true) !== 0x04034b50) {
+        throw new Error("Invalid local header for " + entry.name);
+      }
+      const lNameLen = view.getUint16(lh + 26, true);
+      const lExtraLen = view.getUint16(lh + 28, true);
+      const dataStart = lh + 30 + lNameLen + lExtraLen;
+      const slice = bytes.subarray(dataStart, dataStart + entry.compSize);
+      if (entry.method === 0) return slice;
+      if (entry.method === 8) {
+        if (typeof DecompressionStream === "undefined") {
+          throw new Error("Browser does not support DecompressionStream('deflate-raw').");
+        }
+        const ds = new DecompressionStream("deflate-raw");
+        const writer = ds.writable.getWriter();
+        writer.write(slice);
+        writer.close();
+        const outBuf = await new Response(ds.readable).arrayBuffer();
+        return new Uint8Array(outBuf);
+      }
+      throw new Error("Unsupported ZIP compression method " + entry.method + " in " + entry.name);
+    }
+
+    return { entries, extractBytes };
+  }
+
+  // Parse JVM .class header + Constant Pool (extracts majorVersion, internalName, superName, referencedClasses, memberCount)
+  function parseClassBytes(u8) {
+    const view = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    if (u8.byteLength < 10 || view.getUint32(0, false) !== 0xCAFEBABE) {
+      throw new Error("Invalid class magic");
+    }
+    const majorVersion = view.getUint16(6, false);
+    const cpCount = view.getUint16(8, false);
+    const utf8Pool = new Array(cpCount);
+    const classRefIndices = [];
+    const nameAndTypeCount = { count: 0 };
+    const decoder = new TextDecoder("utf-8");
+
+    let offset = 10;
+    for (let idx = 1; idx < cpCount; idx++) {
+      if (offset >= u8.byteLength) break;
+      const tag = u8[offset++];
+      switch (tag) {
+        case 1: { // CONSTANT_Utf8
+          const len = view.getUint16(offset, false);
+          offset += 2;
+          utf8Pool[idx] = decoder.decode(u8.subarray(offset, offset + len));
+          offset += len;
+          break;
+        }
+        case 7: { // CONSTANT_Class
+          const nameIndex = view.getUint16(offset, false);
+          classRefIndices.push({ cpIndex: idx, nameIndex });
+          offset += 2;
+          break;
+        }
+        case 8: case 16: case 19: case 20:
+          offset += 2;
+          break;
+        case 3: case 4: case 9: case 10: case 11: case 12: case 17: case 18:
+          if (tag === 12) nameAndTypeCount.count++;
+          offset += 4;
+          break;
+        case 5: case 6:
+          offset += 8;
+          idx++; // 8-byte constants take two constant pool slots
+          break;
+        case 15:
+          offset += 3;
+          break;
+        default:
+          throw new Error("Unknown constant pool tag " + tag);
+      }
+    }
+
+    const classByCp = new Map();
+    for (const item of classRefIndices) {
+      const str = utf8Pool[item.nameIndex];
+      if (str) classByCp.set(item.cpIndex, str);
+    }
+
+    let internalName = null;
+    let superName = null;
+    let fieldsCount = 0;
+    let methodsCount = 0;
+    if (offset + 6 <= u8.byteLength) {
+      const thisCp = view.getUint16(offset + 2, false);
+      const superCp = view.getUint16(offset + 4, false);
+      internalName = classByCp.get(thisCp) || null;
+      superName = classByCp.get(superCp) || null;
+      const ifaceCount = view.getUint16(offset + 6, false);
+      let memberPos = offset + 8 + ifaceCount * 2;
+      if (memberPos + 2 <= u8.byteLength) {
+        fieldsCount = view.getUint16(memberPos, false);
+        memberPos += 2;
+        for (let f = 0; f < fieldsCount && memberPos + 8 <= u8.byteLength; f++) {
+          const attrCount = view.getUint16(memberPos + 6, false);
+          memberPos += 8;
+          for (let a = 0; a < attrCount && memberPos + 6 <= u8.byteLength; a++) {
+            const attrLen = view.getUint32(memberPos + 2, false);
+            memberPos += 6 + attrLen;
+          }
+        }
+        if (memberPos + 2 <= u8.byteLength) {
+          methodsCount = view.getUint16(memberPos, false);
+        }
+      }
+    }
+
+    const referencedClasses = [];
+    for (const [, cname] of classByCp.entries()) {
+      if (!cname || cname === internalName) continue;
+      const clean = cname.startsWith("[") ? cname.replace(/^\[+L?/, "").replace(/;$/, "") : cname;
+      if (clean && !clean.startsWith("java/") && !clean.startsWith("jdk/")) {
+        referencedClasses.push(clean);
+      }
+    }
+
+    const isKotlin = utf8Pool.includes("Lkotlin/Metadata;");
+    const abiSig = `${internalName}@${majorVersion}:f=${fieldsCount}:m=${methodsCount}:nt=${nameAndTypeCount.count}`;
+    return { internalName, superName, majorVersion, isKotlin, referencedClasses, abiSig };
+  }
+
+  // Lightweight safe parser for plugin.yml and paper-plugin.yml
+  function parseDescriptorYaml(kind, text) {
+    const lines = text.replace(/\r\n/g, "\n").split("\n");
+    const scalar = {};
+    const listMap = {};
+    const commands = [];
+    const paperDeps = []; // { name, phase, required, joinClasspath }
+    const retyped = [];
+
+    function stripComment(s) {
+      return s.replace(/\s+#.*$/, "").trim();
+    }
+    function unquote(s) {
+      if ((s.startsWith("'") && s.endsWith("'")) || (s.startsWith('"') && s.endsWith('"'))) {
+        return s.slice(1, -1);
+      }
+      return s;
+    }
+    function parseInlineArray(raw) {
+      const inner = raw.slice(1, -1).trim();
+      if (!inner) return [];
+      return inner.split(",").map(x => unquote(x.trim())).filter(Boolean);
+    }
+
+    let i = 0;
+    while (i < lines.length) {
+      const rawLine = lines[i];
+      const trimmed = stripComment(rawLine);
+      if (!trimmed || trimmed.startsWith("#")) { i++; continue; }
+      const indent = rawLine.search(/\S/);
+      if (indent === 0 && trimmed.includes(":")) {
+        const idx = trimmed.indexOf(":");
+        const key = trimmed.slice(0, idx).trim();
+        const rest = trimmed.slice(idx + 1).trim();
+
+        if ((key === "api-version" || key === "version") && rest && !rest.startsWith("'") && !rest.startsWith('"')) {
+          if (/^\d+\.\d*0$/.test(rest)) {
+            retyped.push({ key, written: rest, loaded: String(parseFloat(rest)) });
+          }
+        }
+
+        if (rest.startsWith("[") && rest.endsWith("]")) {
+          listMap[key] = parseInlineArray(rest);
+          i++;
+          continue;
+        }
+        if (rest !== "") {
+          scalar[key] = unquote(rest);
+          i++;
+          continue;
+        }
+
+        // Block section
+        i++;
+        if (key === "depend" || key === "softdepend" || key === "loadbefore" || key === "provides" || key === "libraries") {
+          const items = [];
+          while (i < lines.length) {
+            const subRaw = lines[i];
+            const subTrim = stripComment(subRaw);
+            if (!subTrim) { i++; continue; }
+            const subIndent = subRaw.search(/\S/);
+            if (subIndent <= 0) break;
+            if (subTrim.startsWith("-")) {
+              items.push(unquote(subTrim.slice(1).trim()));
+            }
+            i++;
+          }
+          listMap[key] = items;
+          continue;
+        }
+
+        if (key === "commands") {
+          while (i < lines.length) {
+            const subRaw = lines[i];
+            const subTrim = stripComment(subRaw);
+            if (!subTrim) { i++; continue; }
+            const subIndent = subRaw.search(/\S/);
+            if (subIndent <= 0) break;
+            if (subIndent === 2 && subTrim.endsWith(":")) {
+              commands.push(subTrim.slice(0, -1).trim());
+            }
+            i++;
+          }
+          continue;
+        }
+
+        if (key === "dependencies" && kind === "paper-plugin.yml") {
+          let currentPhase = null;
+          let currentDep = null;
+          while (i < lines.length) {
+            const subRaw = lines[i];
+            const subTrim = stripComment(subRaw);
+            if (!subTrim) { i++; continue; }
+            const subIndent = subRaw.search(/\S/);
+            if (subIndent <= 0) break;
+            if (subIndent === 2 && subTrim.endsWith(":")) {
+              currentPhase = subTrim.slice(0, -1).trim();
+              currentDep = null;
+            } else if (subIndent === 4 && currentPhase) {
+              const dIdx = subTrim.indexOf(":");
+              const dName = dIdx >= 0 ? subTrim.slice(0, dIdx).trim() : subTrim;
+              currentDep = { name: unquote(dName), phase: currentPhase, required: true, joinClasspath: true };
+              paperDeps.push(currentDep);
+            } else if (subIndent >= 6 && currentDep && subTrim.includes(":")) {
+              const oIdx = subTrim.indexOf(":");
+              const oKey = subTrim.slice(0, oIdx).trim();
+              const oVal = unquote(subTrim.slice(oIdx + 1).trim());
+              if (oKey === "required") currentDep.required = (oVal !== "false");
+              if (oKey === "join-classpath") currentDep.joinClasspath = (oVal !== "false");
+            }
+            i++;
+          }
+          continue;
+        }
+      } else {
+        i++;
+      }
+    }
+
+    const dependencies = kind === "paper-plugin.yml"
+      ? paperDeps
+      : [
+          ...(listMap["depend"] || []).map(n => ({ name: n, phase: null, required: true, joinClasspath: true })),
+          ...(listMap["softdepend"] || []).map(n => ({ name: n, phase: null, required: false, joinClasspath: true }))
+        ];
+
+    return {
+      kind,
+      name: scalar["name"] || null,
+      version: scalar["version"] || null,
+      main: scalar["main"] || null,
+      apiVersion: scalar["api-version"] || null,
+      bootstrapper: scalar["bootstrapper"] || null,
+      loader: scalar["loader"] || null,
+      foliaSupported: scalar["folia-supported"] === "true",
+      hasOpenClassloader: scalar["has-open-classloader"] === "false" ? false : true,
+      hasDependsTypo: Object.prototype.hasOwnProperty.call(scalar, "depends") || Object.prototype.hasOwnProperty.call(listMap, "depends"),
+      provides: listMap["provides"] || [],
+      libraries: listMap["libraries"] || [],
+      commands,
+      dependencies,
+      retyped
+    };
+  }
+
+  async function inspectJarFile(file) {
+    const buf = await file.arrayBuffer();
+    const { entries, extractBytes } = await readZipEntries(buf);
+    const descriptors = {};
+    const classes = [];
+    const resources = [];
+
+    for (const entry of entries) {
+      if (entry.isDirectory) continue;
+      if (entry.name === "plugin.yml" || entry.name === "paper-plugin.yml") {
+        const text = new TextDecoder("utf-8").decode(await extractBytes(entry));
+        descriptors[entry.name] = parseDescriptorYaml(entry.name, text);
+        resources.push(entry);
+      } else if (entry.name.endsWith(".class") && !entry.name.startsWith("META-INF/versions/")) {
+        try {
+          const raw = await extractBytes(entry);
+          const parsed = parseClassBytes(raw);
+          const internalName = parsed.internalName || entry.name.slice(0, -6);
+          classes.push({
+            ...parsed,
+            internalName,
+            entryName: entry.name,
+            sizeBytes: entry.uncompSize || raw.byteLength
+          });
+        } catch (_err) {
+          resources.push(entry);
+        }
+      } else {
+        resources.push(entry);
+      }
+    }
+
+    const activeDescriptor = descriptors["paper-plugin.yml"] || descriptors["plugin.yml"] || null;
+    const mainInternal = activeDescriptor && activeDescriptor.main ? activeDescriptor.main.replace(/\./g, "/") : null;
+
+    let ownPackageRoot = null;
+    if (mainInternal && mainInternal.includes("/")) {
+      ownPackageRoot = mainInternal.split("/").slice(0, -1).slice(0, 3).join("/");
+    } else if (classes.length > 0) {
+      const counts = new Map();
+      for (const c of classes) {
+        const root = c.internalName.split("/").slice(0, 3).join("/");
+        counts.set(root, (counts.get(root) || 0) + 1);
+      }
+      let best = null, bestN = -1;
+      for (const [k, v] of counts.entries()) {
+        if (v > bestN) { best = k; bestN = v; }
+      }
+      ownPackageRoot = best;
+    }
+
+    function isOwnCode(internalName) {
+      if (!ownPackageRoot) return false;
+      return internalName === ownPackageRoot || internalName.startsWith(ownPackageRoot + "/");
+    }
+
+    const classSet = new Set(classes.map(c => c.internalName));
+    const maxMajor = classes.reduce((m, c) => Math.max(m, c.majorVersion || 0), 0);
+
+    // Group foreign packages
+    const groupMap = new Map();
+    for (const c of classes) {
+      if (isOwnCode(c.internalName)) continue;
+      const parts = c.internalName.split("/");
+      const depth = Math.min(3, Math.max(1, parts.length - 1));
+      const root = parts.slice(0, depth).join("/");
+      const cur = groupMap.get(root) || { root, classCount: 0, sizeBytes: 0, classes: [] };
+      cur.classCount++;
+      cur.sizeBytes += c.sizeBytes;
+      cur.classes.push(c);
+      groupMap.set(root, cur);
+    }
+
+    return {
+      fileName: file.name,
+      sizeBytes: buf.byteLength,
+      descriptors,
+      descriptor: activeDescriptor,
+      classes,
+      classSet,
+      resources,
+      ownPackageRoot,
+      isOwnCode,
+      maxMajor,
+      bundledGroups: Array.from(groupMap.values()).sort((a, b) => b.sizeBytes - a.sizeBytes)
+    };
+  }
+
+  function runAudit(jars, options) {
+    const findings = [];
+    const add = (ruleId, severity, title, location, detail, evidence, fix) => {
+      findings.push({ ruleId, severity, title, location, detail, evidence: evidence || [], fix });
+    };
+
+    // Single-JAR checks across every loaded JAR
+    for (const jar of jars) {
+      const d = jar.descriptor;
+      const prefix = jars.length > 1 ? `${jar.fileName}: ` : "";
+      if (!d) {
+        add("J001", "info", "No plugin descriptor", jar.fileName,
+          "JAR contains neither plugin.yml nor paper-plugin.yml.", [`${jar.classes.length} classes`],
+          "Place plugin.yml or paper-plugin.yml at the archive root if this is a server plugin.");
+        continue;
+      }
+
+      if (jar.descriptors["plugin.yml"] && jar.descriptors["paper-plugin.yml"]) {
+        add("J009", "warning", "Both plugin.yml and paper-plugin.yml are present", prefix + jar.fileName,
+          "Paper loads paper-plugin.yml and ignores plugin.yml.",
+          ["paper-plugin.yml", "plugin.yml"],
+          "Keep both files synchronised or migrate fully to paper-plugin.yml.");
+
+        const leg = jar.descriptors["plugin.yml"];
+        const pap = jar.descriptors["paper-plugin.yml"];
+        const papServerDeps = new Set(
+          pap.dependencies.filter(x => (!x.phase || x.phase === "server") && x.joinClasspath !== false)
+            .map(x => x.name.toLowerCase())
+        );
+        const drifted = leg.dependencies.filter(x => !papServerDeps.has(x.name.toLowerCase())).map(x => x.name);
+        if (drifted.length > 0) {
+          add("J042", "critical", "paper-plugin.yml omits dependencies declared in plugin.yml",
+            prefix + "paper-plugin.yml vs plugin.yml",
+            `plugin.yml declares [${drifted.join(", ")}] missing or isolated in paper-plugin.yml dependencies.server; Paper ignores plugin.yml and blocks classloader access.`,
+            drifted.map(n => `missing in paper-plugin.yml server dependencies: ${n}`),
+            "Declare every runtime plugin dependency under dependencies.server with join-classpath: true in paper-plugin.yml.");
+        }
+      }
+
+      const missingReq = ["name", "version", "main"].filter(k => !d[k]);
+      if (missingReq.length > 0) {
+        add("J002", "blocker", "Descriptor is missing a required field", prefix + d.kind,
+          `Missing required field(s): ${missingReq.join(", ")}.`, [],
+          "Add name, version, and main to the plugin descriptor.");
+      }
+
+      if (d.main && !jar.classSet.has(d.main.replace(/\./g, "/"))) {
+        add("J004", "blocker", "Main class is not inside the jar", prefix + d.main,
+          `Declared main class '${d.main}' is absent from ${jar.classes.length} class entries.`, [],
+          "Verify the main class name and ShadowJar relocation rules.");
+      }
+
+      if (d.kind === "paper-plugin.yml") {
+        for (const field of ["bootstrapper", "loader"]) {
+          if (d[field] && !jar.classSet.has(d[field].replace(/\./g, "/"))) {
+            add("J042", "blocker", "paper-plugin.yml entrypoint class is missing",
+              `${prefix}paper-plugin.yml: ${field}`,
+              `Declared ${field} '${d[field]}' is not present in the JAR.`, [],
+              `Include ${d[field]} in the packaged JAR or remove ${field} from paper-plugin.yml.`);
+          }
+        }
+        const serverSet = new Set(d.dependencies.filter(x => x.phase === "server").map(x => x.name.toLowerCase()));
+        const bootOnly = d.dependencies.filter(x => x.phase === "bootstrap" && !serverSet.has(x.name.toLowerCase()));
+        if (bootOnly.length > 0) {
+          add("J042", "warning", "Dependency declared only in dependencies.bootstrap",
+            `${prefix}paper-plugin.yml: dependencies.bootstrap`,
+            `[${bootOnly.map(x => x.name).join(", ")}] is absent from dependencies.server; PaperPluginClassLoader will not expose its classes at server runtime.`,
+            [], "Add the dependency under dependencies.server if runtime classes are referenced.");
+        }
+      }
+
+      if (d.hasDependsTypo) {
+        add("J006", "warning", "Descriptor contains unknown key 'depends'", prefix + d.kind,
+          "Unknown key 'depends' is ignored silently by the server.", ["'depends' looks like 'depend'"],
+          "Rename 'depends' to 'depend' (plugin.yml) or 'dependencies' (paper-plugin.yml).");
+      }
+
+      for (const r of d.retyped) {
+        add("J013", "warning", "Unquoted version scalar rewritten by YAML float resolver",
+          `${prefix}${d.kind}: ${r.key}`,
+          `Written as ${r.written}, but YAML resolves it as ${r.loaded}.`,
+          [`Quote the scalar: ${r.key}: '${r.written}'`],
+          "Wrap version and api-version values in single quotes.");
+      }
+
+      if (!d.apiVersion) {
+        add(d.kind === "paper-plugin.yml" ? "J002" : "J007",
+          d.kind === "paper-plugin.yml" ? "blocker" : "warning",
+          d.kind === "paper-plugin.yml" ? "paper-plugin.yml requires api-version" : "No api-version declared (legacy mode)",
+          prefix + d.kind,
+          d.kind === "paper-plugin.yml"
+            ? "Paper refuses to load paper-plugin.yml without api-version."
+            : "Server enables legacy pre-1.13 material and bytecode conversion.",
+          [], "Declare api-version (for example '1.21.4' or '26.2').");
+      }
+
+      if (options.targetJava > 0 && jar.maxMajor > javaToMajor(options.targetJava)) {
+        add("J010", "critical", "Compiled for a newer Java release than target server",
+          jar.fileName,
+          `Classes require Java ${majorToJava(jar.maxMajor)} (class major ${jar.maxMajor}), target server runs Java ${options.targetJava}.`,
+          [], `Compile with --release ${options.targetJava} or upgrade the server JVM.`);
+      }
+
+      // Bundling checks
+      const bstatsGroups = jar.bundledGroups.filter(g => startsWithPkg(g.root, "org/bstats"));
+      if (bstatsGroups.length > 0) {
+        const count = bstatsGroups.reduce((s, g) => s + g.classCount, 0);
+        add("J024", "critical", "bStats Metrics shaded without relocation", prefix + "org.bstats",
+          `${count} class(es) shipped under org.bstats instead of ${jar.ownPackageRoot ? jar.ownPackageRoot.replace(/\//g, ".") : "the plugin package"}.`,
+          bstatsGroups.flatMap(g => g.classes.slice(0, 3).map(c => c.internalName.replace(/\//g, "."))),
+          "Relocate org.bstats under your plugin package in ShadowJar or maven-shade-plugin.");
+      }
+
+      const kotlinGroups = jar.bundledGroups.filter(g => g.root === "kotlin" || g.root.startsWith("kotlin/") || g.root === "kotlinx" || g.root.startsWith("kotlinx/"));
+      if (kotlinGroups.length > 0) {
+        const count = kotlinGroups.reduce((s, g) => s + g.classCount, 0);
+        add("J023", "warning", "Kotlin standard library shaded without relocation", prefix + "kotlin",
+          `${count} Kotlin runtime classes shipped under their original package names.`, [],
+          "Relocate kotlin.** under your plugin package or load Kotlin via libraries:.");
+      }
+
+      for (const group of jar.bundledGroups) {
+        if (startsWithPkg(group.root, "org/bstats")) continue;
+        if (group.root === "kotlin" || group.root.startsWith("kotlin/") || group.root === "kotlinx" || group.root.startsWith("kotlinx/")) continue;
+
+        const srv = matchTable(group.root, SERVER_NAMESPACES);
+        if (srv) {
+          add("J020", "critical", "JAR ships classes from the server namespace",
+            prefix + group.root.replace(/\//g, "."),
+            `${group.classCount} class(es) inside ${srv.root.replace(/\//g, ".")} (${srv.info}).`,
+            group.classes.slice(0, 3).map(c => c.internalName.replace(/\//g, ".")),
+            "Change the server API dependency scope to compileOnly.");
+          continue;
+        }
+
+        const prov = matchTable(group.root, PROVIDED_LIBS);
+        if (prov) {
+          add("J021", "warning", "Bundles a library already provided by Paper",
+            prefix + group.root.replace(/\//g, "."),
+            `${group.classCount} class(es) duplicate server-provided ${prov.info}.`, [],
+            "Use compileOnly or relocate the shaded package if a custom version is mandatory.");
+          continue;
+        }
+
+        if (group.classCount >= 3) {
+          add("J022", "warning", "Third-party library shaded without relocation",
+            prefix + group.root.replace(/\//g, "."),
+            `${group.classCount} class(es) outside own package (${jar.ownPackageRoot ? jar.ownPackageRoot.replace(/\//g, ".") : "unknown"}).`,
+            group.classes.slice(0, 3).map(c => c.internalName.replace(/\//g, ".")),
+            "Relocate shaded libraries under your plugin package or move them to libraries:.");
+        }
+      }
+
+      const sigFiles = jar.resources.filter(r => /^META-INF\/[^/]+\.(SF|DSA|RSA)$/i.test(r.name));
+      if (sigFiles.length > 0) {
+        add("J031", "critical", "Signature files survived shading", prefix + "META-INF",
+          `${sigFiles.length} signature file(s) (${sigFiles[0].name}) will trigger SecurityException at class load.`, [],
+          "Exclude META-INF/*.SF, META-INF/*.DSA, and META-INF/*.RSA in ShadowJar.");
+      }
+    }
+
+    // Multi-JAR Stack checks when 2+ plugin JARs are loaded
+    const plugins = jars.filter(j => j.descriptor && j.descriptor.name);
+    if (plugins.length >= 2 || options.foliaMode) {
+      const byName = new Map();
+      for (const p of plugins) {
+        byName.set(p.descriptor.name.toLowerCase(), p);
+        for (const prov of p.descriptor.provides) {
+          if (!byName.has(prov.toLowerCase())) byName.set(prov.toLowerCase(), p);
+        }
+      }
+
+      if (options.foliaMode) {
+        for (const p of plugins) {
+          if (!p.descriptor.foliaSupported) {
+            add("S060", "warning", "Plugin does not declare Folia support", p.descriptor.name,
+              "folia-supported: true is absent, so Folia refuses to load this plugin.", [p.fileName],
+              "Verify regionised thread-safety with foliascan and set folia-supported: true.");
+          }
+        }
+      }
+
+      if (plugins.length >= 2) {
+        // Duplicate names
+        const nameGroups = new Map();
+        for (const p of plugins) {
+          const k = p.descriptor.name.toLowerCase();
+          const arr = nameGroups.get(k) || [];
+          arr.push(p);
+          nameGroups.set(k, arr);
+        }
+        for (const [, arr] of nameGroups.entries()) {
+          if (arr.length > 1) {
+            add("S010", "critical", "Multiple JARs declare the same plugin name", arr[0].descriptor.name,
+              `${arr.length} JARs declare '${arr[0].descriptor.name}'.`,
+              arr.map(x => `${x.fileName} (${x.descriptor.version || "?"})`),
+              "Remove the older duplicate JAR from plugins/.");
+          }
+        }
+
+        // Missing hard dependencies
+        for (const p of plugins) {
+          for (const dep of p.descriptor.dependencies) {
+            if (!byName.has(dep.name.toLowerCase()) && dep.required) {
+              add("S001", "blocker", "Hard dependency is not in the loaded plugin set",
+                `${p.descriptor.name} -> ${dep.name}`,
+                `${p.descriptor.name} requires ${dep.name}, which was not among the dropped JARs.`, [],
+                "Include the required plugin JAR or mark the dependency optional.");
+            }
+          }
+        }
+
+        // Own class ownership map for cross-plugin bytecode reference & Paper isolation audit
+        const classOwners = new Map();
+        for (const p of plugins) {
+          for (const c of p.classes) {
+            if (p.isOwnCode(c.internalName) && !matchTable(c.internalName, SERVER_NAMESPACES)) {
+              const list = classOwners.get(c.internalName) || [];
+              list.push(p);
+              classOwners.set(c.internalName, list);
+            }
+          }
+        }
+
+        const blockedPairs = new Set();
+        for (const p of plugins) {
+          if (p.descriptor.kind === "plugin.yml") {
+            for (const dep of p.descriptor.dependencies) {
+              const target = byName.get(dep.name.toLowerCase());
+              if (target && target !== p && target.descriptor.kind === "paper-plugin.yml" && target.descriptor.hasOpenClassloader === false) {
+                const pairKey = `${p.descriptor.name.toLowerCase()}->${target.descriptor.name.toLowerCase()}`;
+                blockedPairs.add(pairKey);
+                add("S004", "critical", "Paper isolated classloader blocks legacy plugin dependency",
+                  `${p.descriptor.name} -> ${target.descriptor.name}`,
+                  `Legacy plugin.yml plugin ${p.descriptor.name} depends on Paper plugin ${target.descriptor.name}, which sets has-open-classloader: false.`,
+                  [`${p.fileName} (plugin.yml) -> ${target.fileName} (has-open-classloader: false)`],
+                  "Migrate caller to paper-plugin.yml or set has-open-classloader: true on the target plugin.");
+              }
+            }
+          }
+
+          const refsByTarget = new Map();
+          for (const c of p.classes) {
+            if (!p.isOwnCode(c.internalName)) continue;
+            for (const ref of c.referencedClasses) {
+              const owners = classOwners.get(ref);
+              if (owners && owners.length === 1 && owners[0] !== p) {
+                const target = owners[0];
+                const list = refsByTarget.get(target) || [];
+                list.push(`${c.internalName.replace(/\//g, ".")} -> ${ref.replace(/\//g, ".")}`);
+                refsByTarget.set(target, list);
+              }
+            }
+          }
+
+          for (const [target, refs] of refsByTarget.entries()) {
+            const targetNames = new Set([target.descriptor.name.toLowerCase(), ...target.descriptor.provides.map(x => x.toLowerCase())]);
+            const matching = p.descriptor.dependencies.filter(d => targetNames.has(d.name.toLowerCase()));
+            const pairKey = `${p.descriptor.name.toLowerCase()}->${target.descriptor.name.toLowerCase()}`;
+            const evidence = Array.from(new Set(refs)).slice(0, 4);
+
+            if (p.descriptor.kind === "plugin.yml" && target.descriptor.kind === "paper-plugin.yml" && target.descriptor.hasOpenClassloader === false) {
+              if (!blockedPairs.has(pairKey)) {
+                blockedPairs.add(pairKey);
+                add("S004", "critical", "Paper isolated classloader blocks cross-plugin access",
+                  `${p.descriptor.name} -> ${target.descriptor.name}`,
+                  `${p.descriptor.name} (plugin.yml) references ${target.descriptor.name} bytecode, but ${target.descriptor.name} sets has-open-classloader: false.`,
+                  evidence, "Set has-open-classloader: true or migrate caller to paper-plugin.yml.");
+              }
+              continue;
+            }
+
+            if (matching.length === 0) {
+              const isPaper = p.descriptor.kind === "paper-plugin.yml";
+              add("S003", isPaper ? "critical" : "warning",
+                "Bytecode references an installed plugin without declaring a dependency",
+                `${p.descriptor.name} -> ${target.descriptor.name}`,
+                isPaper
+                  ? `${p.descriptor.name} (paper-plugin.yml) references ${target.descriptor.name} classes without declaring ${target.descriptor.name} in dependencies.server; PaperPluginClassLoader throws NoClassDefFoundError.`
+                  : `${p.descriptor.name} (plugin.yml) references ${target.descriptor.name} classes without depend/softdepend; load order is unenforced.`,
+                evidence,
+                "Declare the target plugin under dependencies.server (paper-plugin.yml) or depend/softdepend (plugin.yml).");
+              continue;
+            }
+
+            if (p.descriptor.kind === "paper-plugin.yml") {
+              const serverDeps = matching.filter(d => !d.phase || d.phase === "server");
+              if (serverDeps.length === 0) {
+                add("S004", "critical", "Paper isolated classloader blocks bootstrap-only dependency at runtime",
+                  `${p.descriptor.name} -> ${target.descriptor.name}`,
+                  `${p.descriptor.name} declares ${target.descriptor.name} only in dependencies.bootstrap while referencing its classes.`,
+                  evidence, "Add the dependency under dependencies.server with join-classpath: true.");
+              } else if (serverDeps.every(d => d.joinClasspath === false)) {
+                add("S004", "critical", "Paper isolated classloader blocks join-classpath: false dependency",
+                  `${p.descriptor.name} -> ${target.descriptor.name}`,
+                  `${p.descriptor.name} sets join-classpath: false on ${target.descriptor.name} while referencing its classes in bytecode.`,
+                  evidence, "Set join-classpath: true under dependencies.server in paper-plugin.yml.");
+              }
+            }
+          }
+        }
+
+        // Transitive shading collisions across plugins
+        const shipments = new Map();
+        for (const p of plugins) {
+          const byLib = new Map();
+          for (const g of p.bundledGroups) {
+            if (matchTable(g.root, SERVER_NAMESPACES)) continue;
+            const hr = matchTable(g.root, HIGH_RISK_ROOTS);
+            const pr = matchTable(g.root, PROVIDED_LIBS);
+            const libRoot = hr ? hr.root : (pr ? pr.root : g.root);
+            const cur = byLib.get(libRoot) || { classes: [], bytes: 0 };
+            cur.classes.push(...g.classes);
+            cur.bytes += g.sizeBytes;
+            byLib.set(libRoot, cur);
+          }
+
+          for (const [libRoot, item] of byLib.entries()) {
+            const hr = matchTable(libRoot, HIGH_RISK_ROOTS);
+            const minReq = libRoot === "org/bstats" ? 1 : (hr ? 2 : 4);
+            if (item.classes.length < minReq) continue;
+            const fp = item.classes.map(c => c.abiSig).sort().join("|");
+            const arr = shipments.get(libRoot) || [];
+            arr.push({ plugin: p.descriptor.name, classCount: item.classes.length, bytes: item.bytes, fp });
+            shipments.set(libRoot, arr);
+          }
+        }
+
+        for (const [libRoot, list] of shipments.entries()) {
+          if (list.length < 2) continue;
+          const dotted = libRoot.replace(/\//g, ".");
+          const distinctBuilds = new Set(list.map(x => x.fp)).size;
+          const hr = matchTable(libRoot, HIGH_RISK_ROOTS);
+          const ev = list.map(x => `${x.plugin}: ${x.classCount} class(es), ${Math.max(1, Math.round(x.bytes / 1024))} KiB`);
+          if (hr) {
+            ev.push(hr.info);
+            add("S032", "critical", "High-risk transitive library shaded unrelocated across plugins",
+              dotted,
+              `High-risk library ${dotted} shaded unrelocated by ${list.length} plugins (${distinctBuilds > 1 ? distinctBuilds + " incompatible ABI builds" : "unrelocated collision"}).`,
+              ev, "Relocate shaded transitive packages under each plugin's own namespace.");
+          } else if (distinctBuilds > 1) {
+            add("S030", "warning", "Unrelocated library shipped in different ABI builds",
+              dotted, `Shipped unrelocated by ${list.length} plugins in ${distinctBuilds} different builds.`,
+              ev, "Relocate shaded packages under each plugin's own namespace.");
+          } else {
+            add("S031", "info", "Identical unrelocated library duplicated across plugins",
+              dotted, `Identical copy shipped by ${list.length} plugins.`,
+              ev, "Move shared dependencies to descriptor libraries: or relocate.");
+          }
+        }
+      }
+    }
+
+    findings.sort((a, b) => (SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]) || a.ruleId.localeCompare(b.ruleId));
+    return findings;
+  }
+
+  // Binary builders for in-browser synthetic demo JARs (creates genuine 0xCAFEBABE .class files + valid ZIP Central Directory!)
+  function buildSyntheticClass(internalName, majorVersion, referencedOwner, extraMethod) {
+    const enc = new TextEncoder();
+    const utf8Items = ["", "java/lang/Object", "<init>", "()V", "Code", internalName];
+    if (referencedOwner) utf8Items.push(referencedOwner, "apiCall");
+    if (extraMethod) utf8Items.push(extraMethod);
+
+    // Build constant pool carefully
+    const cpChunks = [];
+    let cpIndex = 1;
+    const utfIdx = {};
+    for (let i = 1; i < utf8Items.length; i++) {
+      const s = enc.encode(utf8Items[i]);
+      const b = new Uint8Array(3 + s.length);
+      b[0] = 1;
+      b[1] = (s.length >> 8) & 0xff;
+      b[2] = s.length & 0xff;
+      b.set(s, 3);
+      cpChunks.push(b);
+      utfIdx[utf8Items[i]] = cpIndex++;
+    }
+
+    function addClassRef(name) {
+      const u = utfIdx[name];
+      const b = new Uint8Array([7, (u >> 8) & 0xff, u & 0xff]);
+      cpChunks.push(b);
+      return cpIndex++;
+    }
+    const objClassIdx = addClassRef("java/lang/Object");
+    const thisClassIdx = addClassRef(internalName);
+    let refMethodIdx = 0;
+    if (referencedOwner) {
+      const refClassIdx = addClassRef(referencedOwner);
+      const natIdx = cpIndex++;
+      cpChunks.push(new Uint8Array([
+        12, (utfIdx["apiCall"] >> 8) & 0xff, utfIdx["apiCall"] & 0xff,
+        (utfIdx["()V"] >> 8) & 0xff, utfIdx["()V"] & 0xff
+      ]));
+      refMethodIdx = cpIndex++;
+      cpChunks.push(new Uint8Array([
+        10, (refClassIdx >> 8) & 0xff, refClassIdx & 0xff,
+        (natIdx >> 8) & 0xff, natIdx & 0xff
+      ]));
+    }
+
+    const cpLen = cpChunks.reduce((s, c) => s + c.length, 0);
+    const methodsCount = extraMethod ? 2 : 1;
+    const codeBytes = referencedOwner
+      ? new Uint8Array([0xb8, (refMethodIdx >> 8) & 0xff, refMethodIdx & 0xff, 0xb1])
+      : new Uint8Array([0xb1]);
+
+    const bodyParts = [];
+    const header = new Uint8Array(10);
+    const hv = new DataView(header.buffer);
+    hv.setUint32(0, 0xCAFEBABE, false);
+    hv.setUint16(4, 0, false);
+    hv.setUint16(6, majorVersion, false);
+    hv.setUint16(8, cpIndex, false);
+    bodyParts.push(header, ...cpChunks);
+
+    const clsTail = new Uint8Array(10);
+    const tv = new DataView(clsTail.buffer);
+    tv.setUint16(0, 0x0021, false);
+    tv.setUint16(2, thisClassIdx, false);
+    tv.setUint16(4, objClassIdx, false);
+    tv.setUint16(6, 0, false); // interfaces
+    tv.setUint16(8, 0, false); // fields
+    bodyParts.push(clsTail);
+
+    const mcBuf = new Uint8Array(2);
+    new DataView(mcBuf.buffer).setUint16(0, methodsCount, false);
+    bodyParts.push(mcBuf);
+
+    function buildMethod(nameStr, code) {
+      const attrLen = 12 + code.length;
+      const m = new Uint8Array(8 + 6 + attrLen);
+      const mv = new DataView(m.buffer);
+      mv.setUint16(0, 0x0009, false);
+      mv.setUint16(2, utfIdx[nameStr], false);
+      mv.setUint16(4, utfIdx["()V"], false);
+      mv.setUint16(6, 1, false);
+      mv.setUint16(8, utfIdx["Code"], false);
+      mv.setUint32(10, attrLen, false);
+      mv.setUint16(14, 1, false);
+      mv.setUint16(16, 1, false);
+      mv.setUint32(18, code.length, false);
+      m.set(code, 22);
+      return m;
+    }
+
+    bodyParts.push(buildMethod("<init>", codeBytes));
+    if (extraMethod) bodyParts.push(buildMethod(extraMethod, new Uint8Array([0xb1])));
+    bodyParts.push(new Uint8Array([0, 0])); // class attributes_count = 0
+
+    const total = bodyParts.reduce((s, p) => s + p.length, 0);
+    const out = new Uint8Array(total);
+    let pos = 0;
+    for (const p of bodyParts) { out.set(p, pos); pos += p.length; }
+    return out;
+  }
+
+  function buildStoredZip(fileName, fileMap) {
+    const enc = new TextEncoder();
+    const localParts = [];
+    const cdParts = [];
+    let offset = 0;
+    let count = 0;
+
+    for (const [entryName, content] of Object.entries(fileMap)) {
+      const nameBytes = enc.encode(entryName);
+      const data = content instanceof Uint8Array ? content : enc.encode(content);
+      const lh = new Uint8Array(30 + nameBytes.length);
+      const lv = new DataView(lh.buffer);
+      lv.setUint32(0, 0x04034b50, true);
+      lv.setUint16(4, 20, true);
+      lv.setUint16(8, 0, true); // STORED
+      lv.setUint32(18, data.length, true);
+      lv.setUint32(22, data.length, true);
+      lv.setUint16(26, nameBytes.length, true);
+      lh.set(nameBytes, 30);
+
+      const cd = new Uint8Array(46 + nameBytes.length);
+      const cv = new DataView(cd.buffer);
+      cv.setUint32(0, 0x02014b50, true);
+      cv.setUint16(4, 20, true);
+      cv.setUint16(6, 20, true);
+      cv.setUint16(10, 0, true);
+      cv.setUint32(20, data.length, true);
+      cv.setUint32(24, data.length, true);
+      cv.setUint16(28, nameBytes.length, true);
+      cv.setUint32(42, offset, true);
+      cd.set(nameBytes, 46);
+
+      localParts.push(lh, data);
+      cdParts.push(cd);
+      offset += lh.length + data.length;
+      count++;
+    }
+
+    const cdSize = cdParts.reduce((s, c) => s + c.length, 0);
+    const eocd = new Uint8Array(22);
+    const ev = new DataView(eocd.buffer);
+    ev.setUint32(0, 0x06054b50, true);
+    ev.setUint16(8, count, true);
+    ev.setUint16(10, count, true);
+    ev.setUint32(12, cdSize, true);
+    ev.setUint32(16, offset, true);
+
+    const all = [...localParts, ...cdParts, eocd];
+    const total = all.reduce((s, p) => s + p.length, 0);
+    const zipBytes = new Uint8Array(total);
+    let p = 0;
+    for (const chunk of all) { zipBytes.set(chunk, p); p += chunk.length; }
+    return new File([zipBytes], fileName, { type: "application/java-archive" });
+  }
+
+  // UI state & rendering
+  let currentJars = [];
+  let currentFindings = [];
+
+  const dropzone = document.getElementById("dropzone");
+  const fileInput = document.getElementById("fileInput");
+  const targetJavaEl = document.getElementById("targetJava");
+  const sevFilterEl = document.getElementById("sevFilter");
+  const foliaModeEl = document.getElementById("foliaMode");
+  const btnExportSarif = document.getElementById("btnExportSarif");
+  const btnExportJson = document.getElementById("btnExportJson");
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function refreshView() {
+    if (currentJars.length === 0) return;
+    const options = {
+      targetJava: parseInt(targetJavaEl.value, 10) || 0,
+      foliaMode: foliaModeEl.checked
+    };
+    currentFindings = runAudit(currentJars, options);
+
+    const totalClasses = currentJars.reduce((s, j) => s + j.classes.length, 0);
+    const highestMajor = currentJars.reduce((m, j) => Math.max(m, j.maxMajor), 0);
+    const critCount = currentFindings.filter(f => f.severity === "blocker" || f.severity === "critical").length;
+    const warnCount = currentFindings.filter(f => f.severity === "warning" || f.severity === "info").length;
+
+    document.getElementById("statJars").textContent = String(currentJars.length);
+    document.getElementById("statClasses").textContent = String(totalClasses);
+    document.getElementById("statJava").textContent = highestMajor ? `Java ${majorToJava(highestMajor)}` : "-";
+    document.getElementById("statCrit").textContent = String(critCount);
+    document.getElementById("statCrit").style.color = critCount > 0 ? "var(--critical)" : "var(--ok)";
+    document.getElementById("statWarn").textContent = String(warnCount);
+
+    renderMatrix(currentJars);
+    renderFindings(currentFindings);
+    btnExportSarif.disabled = false;
+    btnExportJson.disabled = false;
+  }
+
+  function renderMatrix(jars) {
+    const container = document.getElementById("matrixContainer");
+    const rows = jars.map(jar => {
+      const d = jar.descriptor;
+      const modeBadge = !d
+        ? `<span class="tag tag-legacy">library / no descriptor</span>`
+        : (d.kind === "paper-plugin.yml"
+            ? `<span class="tag tag-paper">paper-plugin.yml (isolated${d.hasOpenClassloader === false ? ", closed" : ""})</span>`
+            : `<span class="tag tag-legacy">plugin.yml (shared loader)</span>`);
+
+      const shadedTags = jar.bundledGroups.length === 0
+        ? `<span class="tag tag-ok">clean (own package only)</span>`
+        : jar.bundledGroups.slice(0, 6).map(g => {
+            const hazard = matchTable(g.root, HIGH_RISK_ROOTS) || matchTable(g.root, SERVER_NAMESPACES);
+            const cls = hazard ? "tag tag-hazard" : "tag tag-legacy";
+            return `<span class="${cls}">${esc(g.root.replace(/\//g, "."))} (${g.classCount})</span>`;
+          }).join("");
+
+      const deps = d && d.dependencies.length > 0
+        ? d.dependencies.map(dep => {
+            const flags = [];
+            if (dep.phase) flags.push(dep.phase);
+            if (dep.joinClasspath === false) flags.push("join-classpath:false");
+            if (!dep.required) flags.push("optional");
+            return `<code>${esc(dep.name)}${flags.length ? " [" + esc(flags.join(",")) + "]" : ""}</code>`;
+          }).join(" ")
+        : `<span style="color:var(--muted)">none</span>`;
+
+      return `<tr>
+        <td><strong>${esc(d && d.name ? d.name : jar.fileName)}</strong><br><span style="color:var(--muted);font-family:var(--mono);font-size:0.78rem">${esc(jar.fileName)} (${Math.max(1, Math.round(jar.sizeBytes / 1024))} KiB)</span></td>
+        <td>${modeBadge}</td>
+        <td><code>${esc(jar.ownPackageRoot ? jar.ownPackageRoot.replace(/\//g, ".") : "-")}</code><br><span style="color:var(--muted);font-size:0.78rem">${jar.classes.length} classes, Java ${jar.maxMajor ? majorToJava(jar.maxMajor) : "?"}</span></td>
+        <td>${deps}</td>
+        <td>${shadedTags}</td>
+      </tr>`;
+    }).join("");
+
+    container.className = "table-wrap";
+    container.innerHTML = `<table>
+      <thead>
+        <tr>
+          <th>Plugin / Artifact</th>
+          <th>Classloader Mode</th>
+          <th>Own Package &amp; Bytecode</th>
+          <th>Declared Dependencies</th>
+          <th>Unrelocated Foreign Packages</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+
+  function renderFindings(findings) {
+    const filter = sevFilterEl.value;
+    const minRank = filter === "blocker" ? 4 : (filter === "critical" ? 3 : (filter === "warning" ? 2 : 1));
+    const visible = findings.filter(f => SEVERITY_RANK[f.severity] >= minRank);
+    document.getElementById("findingCountLabel").textContent = `${visible.length} of ${findings.length} finding(s)`;
+
+    const container = document.getElementById("findingsContainer");
+    if (visible.length === 0) {
+      container.className = "empty-banner";
+      container.innerHTML = findings.length === 0
+        ? "Zero findings detected across all inspected JARs."
+        : "No findings match the current severity filter.";
+      return;
+    }
+
+    container.className = "findings-list";
+    container.innerHTML = visible.map(f => {
+      const evHtml = f.evidence && f.evidence.length > 0
+        ? `<ul class="finding-evidence">${f.evidence.map(e => `<li>${esc(e)}</li>`).join("")}</ul>`
+        : "";
+      const fixHtml = f.fix ? `<div class="finding-fix">Fix: ${esc(f.fix)}</div>` : "";
+      return `<div class="finding sev-${esc(f.severity)}">
+        <div class="finding-head">
+          <span class="sev-badge">${esc(f.severity)}</span>
+          <span class="rule-id">${esc(f.ruleId)}</span>
+          <span class="finding-title">${esc(f.title)}</span>
+          <span class="finding-loc">${esc(f.location)}</span>
+        </div>
+        <div class="finding-detail">${esc(f.detail)}</div>
+        ${evHtml}
+        ${fixHtml}
+      </div>`;
+    }).join("");
+  }
+
+  async function handleFiles(fileList) {
+    const files = Array.from(fileList).filter(f => f.name.endsWith(".jar") || f.name.endsWith(".zip"));
+    if (files.length === 0) return;
+    currentJars = [];
+    for (const f of files) {
+      currentJars.push(await inspectJarFile(f));
+    }
+    refreshView();
+  }
+
+  dropzone.addEventListener("click", () => fileInput.click());
+  dropzone.addEventListener("dragover", e => { e.preventDefault(); dropzone.classList.add("dragover"); });
+  dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+  dropzone.addEventListener("drop", e => {
+    e.preventDefault();
+    dropzone.classList.remove("dragover");
+    if (e.dataTransfer && e.dataTransfer.files) handleFiles(e.dataTransfer.files);
+  });
+  fileInput.addEventListener("change", () => { if (fileInput.files) handleFiles(fileInput.files); });
+  targetJavaEl.addEventListener("change", refreshView);
+  sevFilterEl.addEventListener("change", refreshView);
+  foliaModeEl.addEventListener("change", refreshView);
+
+  // Demo 1: 3-JAR stack collision & Paper isolated classloader failure
+  document.getElementById("btnDemoStack").addEventListener("click", async () => {
+    const coreJar = buildStoredZip("VaultCore-2.1.0.jar", {
+      "paper-plugin.yml": [
+        "name: VaultCore",
+        "version: '2.1.0'",
+        "main: com.acme.vaultcore.VaultCorePlugin",
+        "api-version: '1.21.4'",
+        "has-open-classloader: false",
+        "folia-supported: true"
+      ].join("\n"),
+      "com/acme/vaultcore/VaultCorePlugin.class": buildSyntheticClass("com/acme/vaultcore/VaultCorePlugin", 65),
+      "com/acme/vaultcore/LedgerApi.class": buildSyntheticClass("com/acme/vaultcore/LedgerApi", 65, null, "deposit"),
+      "com/zaxxer/hikari/HikariConfig.class": buildSyntheticClass("com/zaxxer/hikari/HikariConfig", 65, null, "setJdbcUrl"),
+      "com/zaxxer/hikari/HikariDataSource.class": buildSyntheticClass("com/zaxxer/hikari/HikariDataSource", 65),
+      "org/bstats/bukkit/Metrics.class": buildSyntheticClass("org/bstats/bukkit/Metrics", 65)
+    });
+
+    const shopJar = buildStoredZip("SkyShop-1.4.2.jar", {
+      "paper-plugin.yml": [
+        "name: SkyShop",
+        "version: '1.4.2'",
+        "main: com.acme.skyshop.SkyShopPlugin",
+        "api-version: '1.21.4'",
+        "folia-supported: true"
+      ].join("\n"),
+      // Calls VaultCore's LedgerApi without declaring VaultCore in paper-plugin.yml dependencies.server!
+      "com/acme/skyshop/SkyShopPlugin.class": buildSyntheticClass("com/acme/skyshop/SkyShopPlugin", 65, "com/acme/vaultcore/LedgerApi"),
+      "com/zaxxer/hikari/HikariConfig.class": buildSyntheticClass("com/zaxxer/hikari/HikariConfig", 65, null, "setPoolName"),
+      "com/zaxxer/hikari/HikariDataSource.class": buildSyntheticClass("com/zaxxer/hikari/HikariDataSource", 65),
+      "com/zaxxer/hikari/pool/HikariPool.class": buildSyntheticClass("com/zaxxer/hikari/pool/HikariPool", 65),
+      "org/bstats/bukkit/Metrics.class": buildSyntheticClass("org/bstats/bukkit/Metrics", 65)
+    });
+
+    const legacyBridgeJar = buildStoredZip("LegacyAuctions-0.9.jar", {
+      "plugin.yml": [
+        "name: LegacyAuctions",
+        "version: '0.9'",
+        "main: com.acme.auctions.AuctionPlugin",
+        "api-version: 1.20",
+        "depend: [VaultCore]"
+      ].join("\n"),
+      "com/acme/auctions/AuctionPlugin.class": buildSyntheticClass("com/acme/auctions/AuctionPlugin", 65, "com/acme/vaultcore/LedgerApi")
+    });
+
+    await handleFiles([coreJar, shopJar, legacyBridgeJar]);
+  });
+
+  // Demo 2: Single-JAR unrelocated bStats + dual-descriptor dependency drift
+  document.getElementById("btnDemoSingle").addEventListener("click", async () => {
+    const singleJar = buildStoredZip("CrateMaster-3.0.0.jar", {
+      "plugin.yml": [
+        "name: CrateMaster",
+        "version: '3.0.0'",
+        "main: com.acme.crates.CratePlugin",
+        "api-version: 1.20",
+        "depend: [Vault]",
+        "softdepend: [PlaceholderAPI]"
+      ].join("\n"),
+      "paper-plugin.yml": [
+        "name: CrateMaster",
+        "version: '3.0.0'",
+        "main: com.acme.crates.CratePlugin",
+        "api-version: '1.21.4'"
+      ].join("\n"),
+      "com/acme/crates/CratePlugin.class": buildSyntheticClass("com/acme/crates/CratePlugin", 65),
+      "org/bstats/bukkit/Metrics.class": buildSyntheticClass("org/bstats/bukkit/Metrics", 65),
+      "com/google/gson/Gson.class": buildSyntheticClass("com/google/gson/Gson", 65),
+      "com/google/gson/JsonElement.class": buildSyntheticClass("com/google/gson/JsonElement", 65),
+      "META-INF/CERT.SF": "Signature-Version: 1.0\n"
+    });
+    await handleFiles([singleJar]);
+  });
+
+  function downloadBlob(filename, content, type) {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  btnExportJson.addEventListener("click", () => {
+    const payload = {
+      tool: "pluginscope-web",
+      toolVersion: "0.2.0",
+      jars: currentJars.map(j => ({
+        fileName: j.fileName,
+        plugin: j.descriptor ? j.descriptor.name : null,
+        descriptor: j.descriptor ? j.descriptor.kind : null,
+        classes: j.classes.length,
+        requiredJava: j.maxMajor ? majorToJava(j.maxMajor) : null
+      })),
+      findings: currentFindings
+    };
+    downloadBlob("pluginscope-report.json", JSON.stringify(payload, null, 2), "application/json");
+  });
+
+  btnExportSarif.addEventListener("click", () => {
+    const uniqueRules = [];
+    const ruleIndexMap = new Map();
+    for (const f of currentFindings) {
+      if (!ruleIndexMap.has(f.ruleId)) {
+        ruleIndexMap.set(f.ruleId, uniqueRules.length);
+        uniqueRules.push({
+          id: f.ruleId,
+          name: f.title.replace(/[^A-Za-z0-9]+/g, ""),
+          shortDescription: { text: f.title },
+          defaultConfiguration: { level: (f.severity === "blocker" || f.severity === "critical") ? "error" : (f.severity === "warning" ? "warning" : "note") },
+          help: { text: f.fix || f.title }
+        });
+      }
+    }
+    const sarif = {
+      version: "2.1.0",
+      "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+      runs: [{
+        tool: {
+          driver: {
+            name: "pluginscope",
+            version: "0.2.0",
+            informationUri: "https://github.com/SalyyS1/pluginscope",
+            rules: uniqueRules
+          }
+        },
+        results: currentFindings.map(f => ({
+          ruleId: f.ruleId,
+          ruleIndex: ruleIndexMap.get(f.ruleId),
+          level: (f.severity === "blocker" || f.severity === "critical") ? "error" : (f.severity === "warning" ? "warning" : "note"),
+          message: { text: `[${f.location}] ${f.detail}` },
+          locations: [{
+            physicalLocation: {
+              artifactLocation: { uri: currentJars[0] ? currentJars[0].fileName : "plugins", uriBaseId: "%SRCROOT%" },
+              region: { startLine: 1 }
+            }
+          }]
+        }))
+      }]
+    };
+    downloadBlob("pluginscope.sarif", JSON.stringify(sarif, null, 2), "application/sarif+json");
+  });
+})();
+</script>
+</body>
+</html>

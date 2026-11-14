@@ -24,6 +24,13 @@ abstract class ReportCommand(name: String) : CliktCommand(name = name) {
     protected val format by option("--format", help = "Output format")
         .choice("console", "json", "sarif").default("console")
 
+    protected val jsonFlag by option("--json", help = "Shorthand for --format json").flag()
+
+    protected val sarifFile by option(
+        "--sarif",
+        help = "Write an OASIS SARIF v2.1.0 report to this file (can be combined with console or json output)",
+    ).path()
+
     protected val output by option("-o", "--output", help = "Write the report to this file").path()
 
     protected val failOn by option(
@@ -36,7 +43,8 @@ abstract class ReportCommand(name: String) : CliktCommand(name = name) {
     protected val verbose by option("-v", "--verbose", help = "Show every hit and its source").flag()
 
     protected fun emit(reports: List<ScanReport>) {
-        val text = when (format) {
+        val effectiveFormat = if (jsonFlag && format == "console") "json" else format
+        val text = when (effectiveFormat) {
             "json" -> JsonReporter.render(reports)
             "sarif" -> SarifReporter.render(reports)
             else -> {
@@ -48,8 +56,15 @@ abstract class ReportCommand(name: String) : CliktCommand(name = name) {
         output?.let { target ->
             target.parent?.let { Files.createDirectories(it) }
             Files.writeString(target, text)
-            echo("Wrote $format report to $target")
+            echo("Wrote $effectiveFormat report to $target")
         } ?: echo(text)
+
+        sarifFile?.let { target ->
+            target.parent?.let { Files.createDirectories(it) }
+            val sarifText = if (effectiveFormat == "sarif") text else SarifReporter.render(reports)
+            Files.writeString(target, sarifText)
+            echo("Wrote sarif report to $target", err = effectiveFormat == "json")
+        }
 
         val threshold = Severity.parse(failOn) ?: return
         val worst = reports.mapNotNull { it.worst }.maxByOrNull { it.rank }

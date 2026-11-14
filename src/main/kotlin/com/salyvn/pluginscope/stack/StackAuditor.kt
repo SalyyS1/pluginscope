@@ -1,10 +1,12 @@
 package com.salyvn.pluginscope.stack
 
 import com.salyvn.pluginscope.core.BuildInfo
+import com.salyvn.pluginscope.core.DescriptorKind
 import com.salyvn.pluginscope.core.FindingSink
 import com.salyvn.pluginscope.core.JarInspection
 import com.salyvn.pluginscope.core.JarReader
 import com.salyvn.pluginscope.core.ScanReport
+import com.salyvn.pluginscope.core.Severity
 import com.salyvn.pluginscope.data.JavaRuntimes
 import com.salyvn.pluginscope.data.ServerRuntime
 import java.nio.file.Path
@@ -19,6 +21,7 @@ import java.nio.file.Path
 class StackAuditor(private val foliaTarget: Boolean = false) {
 
     private data class Installed(
+        val path: Path,
         val jar: JarInspection,
         val name: String,
         val version: String?,
@@ -27,11 +30,12 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
 
     fun audit(directory: Path, jars: List<Path>): ScanReport {
         val sink = FindingSink()
-        val inspections = jars.map { JarReader.read(it) }
-        val plugins = inspections.mapNotNull { jar ->
+        val pairs = jars.map { it to JarReader.read(it) }
+        val inspections = pairs.map { it.second }
+        val plugins = pairs.mapNotNull { (path, jar) ->
             val descriptor = jar.descriptor ?: return@mapNotNull null
             val name = descriptor.name ?: return@mapNotNull null
-            Installed(jar, name, descriptor.version, descriptor.provides)
+            Installed(path, jar, name, descriptor.version, descriptor.provides)
         }
         val libraries = inspections.filter { it.descriptor == null }
 
@@ -39,6 +43,7 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
 
         checkIdentity(plugins, sink)
         checkDependencies(plugins, knownNames, sink)
+        checkClassloaderIsolation(plugins, sink)
         checkCommands(plugins, sink)
         checkSharedLibraries(plugins, sink)
         checkRuntime(inspections, plugins, sink)
@@ -154,6 +159,159 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
         }
     }
 
+    /**
+     * Audits cross-plugin bytecode references against descriptor dependency declarations and
+     * Paper's isolated PaperPluginClassLoader / has-open-classloader visibility boundaries.
+     */
+    private fun checkClassloaderIsolation(plugins: List<Installed>, sink: FindingSink) {
+        if (plugins.size < 2) return
+
+        val byCanonicalName = mutableMapOf<String, Installed>()
+        for (plugin in plugins) {
+            byCanonicalName[plugin.name.lowercase()] = plugin
+            for (provided in plugin.provides) {
+                byCanonicalName.putIfAbsent(provided.lowercase(), plugin)
+            }
+        }
+
+        // Map each own-package class that belongs to a single installed plugin.
+        val classOwners = mutableMapOf<String, MutableList<Installed>>()
+        for (plugin in plugins) {
+            for (entry in plugin.jar.classes) {
+                if (plugin.jar.isOwnCode(entry.internalName) && !ServerRuntime.isServerNamespace(entry.internalName)) {
+                    classOwners.getOrPut(entry.internalName) { mutableListOf() } += plugin
+                }
+            }
+        }
+        val uniqueOwnClasses: Map<String, Installed> = classOwners
+            .filterValues { it.size == 1 }
+            .mapValues { it.value.single() }
+
+        val blockedPairsReported = mutableSetOf<Pair<String, String>>()
+
+        // Descriptor-level check: legacy plugin.yml depending on a paper-plugin.yml with has-open-classloader: false.
+        for (plugin in plugins) {
+            val desc = plugin.jar.descriptor ?: continue
+            if (desc.kind != DescriptorKind.LEGACY) continue
+            for (dep in desc.dependencies) {
+                val target = byCanonicalName[dep.name.lowercase()] ?: continue
+                if (target.name.equals(plugin.name, ignoreCase = true)) continue
+                val targetDesc = target.jar.descriptor ?: continue
+                if (targetDesc.kind == DescriptorKind.PAPER && targetDesc.hasOpenClassloader == false) {
+                    val key = plugin.name.lowercase() to target.name.lowercase()
+                    if (blockedPairsReported.add(key)) {
+                        sink.add(
+                            StackRules.ISOLATED_CLASSLOADER_BLOCKED,
+                            location = "${plugin.name} -> ${target.name}",
+                            detail = "Legacy plugin.yml plugin ${plugin.name} depends on Paper plugin " +
+                                "${target.name}, which sets has-open-classloader: false and blocks class visibility.",
+                            evidence = listOf("${plugin.jar.fileName} (plugin.yml) -> ${target.jar.fileName} (has-open-classloader: false)"),
+                        )
+                    }
+                }
+            }
+        }
+
+        if (uniqueOwnClasses.isEmpty()) return
+
+        for (plugin in plugins) {
+            val desc = plugin.jar.descriptor ?: continue
+            val withUses = JarReader.read(plugin.path) { owner -> owner in uniqueOwnClasses }
+            val crossRefsByTarget = linkedMapOf<Installed, MutableList<String>>()
+
+            for (entry in withUses.classes) {
+                if (!plugin.jar.isOwnCode(entry.internalName)) continue
+                val fromDotted = entry.internalName.replace('/', '.')
+                entry.superName?.let { sup ->
+                    val ownerPlugin = uniqueOwnClasses[sup]
+                    if (ownerPlugin != null && !ownerPlugin.name.equals(plugin.name, ignoreCase = true)) {
+                        crossRefsByTarget.getOrPut(ownerPlugin) { mutableListOf() } +=
+                            "$fromDotted extends ${sup.replace('/', '.')}"
+                    }
+                }
+                for (iface in entry.interfaces) {
+                    val ownerPlugin = uniqueOwnClasses[iface]
+                    if (ownerPlugin != null && !ownerPlugin.name.equals(plugin.name, ignoreCase = true)) {
+                        crossRefsByTarget.getOrPut(ownerPlugin) { mutableListOf() } +=
+                            "$fromDotted implements ${iface.replace('/', '.')}"
+                    }
+                }
+            }
+
+            for (use in withUses.memberUses) {
+                if (!plugin.jar.isOwnCode(use.fromClass)) continue
+                val ownerPlugin = uniqueOwnClasses[use.owner] ?: continue
+                if (ownerPlugin.name.equals(plugin.name, ignoreCase = true)) continue
+                val lineSuffix = use.line?.let { ":$it" } ?: ""
+                crossRefsByTarget.getOrPut(ownerPlugin) { mutableListOf() } +=
+                    "${use.fromClass.replace('/', '.')}#${use.fromMethod.substringBefore('(')}$lineSuffix -> ${use.render()}"
+            }
+
+            for ((target, refs) in crossRefsByTarget) {
+                val targetNames = (listOf(target.name) + target.provides).map { it.lowercase() }.toSet()
+                val matchingDeps = desc.dependencies.filter { it.name.lowercase() in targetNames }
+                val sampleEvidence = refs.distinct().take(4)
+                val pairKey = plugin.name.lowercase() to target.name.lowercase()
+
+                val targetDesc = target.jar.descriptor
+                if (desc.kind == DescriptorKind.LEGACY &&
+                    targetDesc?.kind == DescriptorKind.PAPER &&
+                    targetDesc.hasOpenClassloader == false
+                ) {
+                    if (blockedPairsReported.add(pairKey)) {
+                        sink.add(
+                            StackRules.ISOLATED_CLASSLOADER_BLOCKED,
+                            location = "${plugin.name} -> ${target.name}",
+                            detail = "Legacy plugin.yml plugin ${plugin.name} references classes in Paper plugin " +
+                                "${target.name}, whose paper-plugin.yml sets has-open-classloader: false.",
+                            evidence = sampleEvidence,
+                        )
+                    }
+                    continue
+                }
+
+                if (matchingDeps.isEmpty()) {
+                    val isPaper = desc.kind == DescriptorKind.PAPER
+                    sink.add(
+                        StackRules.UNDECLARED_PLUGIN_DEPENDENCY,
+                        location = "${plugin.name} -> ${target.name}",
+                        detail = if (isPaper) {
+                            "${plugin.name} (paper-plugin.yml) references ${target.name} classes without declaring " +
+                                "${target.name} in dependencies.server; PaperPluginClassLoader throws NoClassDefFoundError."
+                        } else {
+                            "${plugin.name} (plugin.yml) references ${target.name} classes without declaring " +
+                                "${target.name} in depend or softdepend; load order is unenforced."
+                        },
+                        evidence = sampleEvidence,
+                        severityOverride = if (isPaper) Severity.CRITICAL else Severity.WARNING,
+                    )
+                    continue
+                }
+
+                if (desc.kind == DescriptorKind.PAPER) {
+                    val serverDeps = matchingDeps.filter { it.phase == null || it.phase == "server" }
+                    if (serverDeps.isEmpty()) {
+                        sink.add(
+                            StackRules.ISOLATED_CLASSLOADER_BLOCKED,
+                            location = "${plugin.name} -> ${target.name}",
+                            detail = "${plugin.name} declares ${target.name} only in dependencies.bootstrap, " +
+                                "so PaperPluginClassLoader blocks runtime access to ${target.name} classes.",
+                            evidence = sampleEvidence,
+                        )
+                    } else if (serverDeps.all { it.joinClasspath == false }) {
+                        sink.add(
+                            StackRules.ISOLATED_CLASSLOADER_BLOCKED,
+                            location = "${plugin.name} -> ${target.name}",
+                            detail = "${plugin.name} sets join-classpath: false on ${target.name} in paper-plugin.yml " +
+                                "while its bytecode directly references ${target.name} classes.",
+                            evidence = sampleEvidence,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     /** Depth-first search over hard dependencies, reporting each cycle once. */
     private fun findCycles(plugins: List<Installed>): List<List<String>> {
         val byName = plugins.associateBy { it.name.lowercase() }
@@ -238,9 +396,15 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
                 .groupBy { libraryRootOf(it.root) }
 
             for ((root, groups) in byLibrary) {
-                val classes = jar.classes.filter { it.internalName.startsWith("$root/") }
-                if (classes.size < MIN_CLASSES) continue
-                val fingerprint = classes.map { it.internalName }.sorted().joinToString(",").hashCode()
+                val classes = jar.classes.filter { it.internalName == root || it.internalName.startsWith("$root/") }
+                val minRequired = minClassesForRoot(root)
+                if (classes.size < minRequired) continue
+                val fingerprint = classes
+                    .sortedBy { it.internalName }
+                    .joinToString("|") { cls ->
+                        "${cls.internalName}@${cls.majorVersion}:m=${cls.methods.sorted().joinToString(",")}:f=${cls.fields.sorted().joinToString(",")}"
+                    }
+                    .hashCode()
                 shipments.getOrPut(root) { mutableListOf() } += Shipment(
                     plugin = plugin.name,
                     classes = classes.size,
@@ -255,10 +419,26 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
             val dotted = packageRoot.replace('/', '.')
             val distinctBuilds = list.map { it.fingerprint }.distinct().size
             val provided = ServerRuntime.providedFor(packageRoot)
+            val highRisk = ServerRuntime.highRiskRootFor(packageRoot)
             val evidence = list.sortedBy { it.plugin }
                 .map { "${it.plugin}: ${it.classes} classes, ${it.bytes / 1024} KiB" } +
-                listOfNotNull(provided?.let { "the server itself provides ${it.artifact}" })
-            if (distinctBuilds > 1) {
+                listOfNotNull(
+                    provided?.let { "the server itself provides ${it.artifact}" },
+                    highRisk?.second,
+                )
+            if (highRisk != null) {
+                val buildSummary = if (distinctBuilds > 1) {
+                    "in $distinctBuilds incompatible ABI builds"
+                } else {
+                    "without package relocation"
+                }
+                sink.add(
+                    StackRules.TRANSITIVE_SHADING_COLLISION,
+                    location = dotted,
+                    detail = "High-risk transitive library $dotted shaded by ${list.size} plugins $buildSummary.",
+                    evidence = evidence,
+                )
+            } else if (distinctBuilds > 1) {
                 sink.add(
                     StackRules.SHARED_LIBRARY_SKEW,
                     location = dotted,
@@ -278,14 +458,21 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
     }
 
     /**
-     * The package a library owns, so its subpackages collapse into one entry. Libraries the server
-     * provides are keyed by the root recorded for them; the Kotlin runtime by its top segment;
-     * everything else keeps the package it was grouped under.
+     * The package a library owns, so its subpackages collapse into one entry. High-risk transitive
+     * libraries (org.bstats, net.kyori, com.zaxxer.hikari, etc.) and server-provided roots collapse
+     * to their canonical prefix; the Kotlin runtime collapses to its top segment.
      */
     private fun libraryRootOf(packageRoot: String): String = when {
+        ServerRuntime.highRiskRootFor(packageRoot) != null -> ServerRuntime.highRiskRootFor(packageRoot)!!.first
         ServerRuntime.providedFor(packageRoot) != null -> ServerRuntime.providedFor(packageRoot)!!.packageRoot
         ServerRuntime.isKotlinRuntime(packageRoot) -> packageRoot.substringBefore('/')
         else -> packageRoot
+    }
+
+    private fun minClassesForRoot(root: String): Int = when {
+        root == "org/bstats" -> 1
+        ServerRuntime.highRiskRootFor(root) != null -> 2
+        else -> MIN_CLASSES
     }
 
     private fun checkRuntime(inspections: List<JarInspection>, plugins: List<Installed>, sink: FindingSink) {

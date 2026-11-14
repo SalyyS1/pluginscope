@@ -29,8 +29,21 @@ internal object BundlingChecks {
             )
         }
 
+        val bstatsGroups = bundled.filter { ServerRuntime.isBstats(it.root) }
+        if (bstatsGroups.isNotEmpty()) {
+            val classes = bstatsGroups.sumOf { it.classCount }
+            val bytes = bstatsGroups.sumOf { it.sizeBytes }
+            sink.add(
+                JarRules.BSTATS_UNRELOCATED,
+                location = "org.bstats",
+                detail = "$classes bStats class(es) (${bytes / 1024} KiB) shipped under org.bstats " +
+                    "instead of ${jar.ownPackageRoot?.replace('/', '.') ?: "the plugin package"}.",
+                evidence = sampleClasses(jar, "org/bstats"),
+            )
+        }
+
         for (group in bundled) {
-            if (ServerRuntime.isKotlinRuntime(group.root)) continue
+            if (ServerRuntime.isKotlinRuntime(group.root) || ServerRuntime.isBstats(group.root)) continue
             val reason = ServerRuntime.serverNamespaceReason(group.root)
             if (reason != null) {
                 sink.add(

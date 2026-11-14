@@ -25,6 +25,30 @@ object StackRules {
         fix = "Break the cycle: one direction becomes a soft dependency.",
     )
 
+    val UNDECLARED_PLUGIN_DEPENDENCY = Rule(
+        id = "S003",
+        severity = Severity.CRITICAL,
+        title = "Bytecode references an installed plugin without declaring a dependency",
+        rationale = "For paper-plugin.yml plugins, PaperPluginClassLoader isolates classloaders and " +
+            "refuses to load classes from undeclared plugins, throwing NoClassDefFoundError even when " +
+            "the target plugin is installed. For legacy plugin.yml plugins, load order becomes arbitrary.",
+        provenance = "Cross-plugin bytecode references compared with descriptor dependency declarations",
+        fix = "Declare the target plugin under dependencies.server (paper-plugin.yml) or depend/softdepend (plugin.yml).",
+    )
+
+    val ISOLATED_CLASSLOADER_BLOCKED = Rule(
+        id = "S004",
+        severity = Severity.CRITICAL,
+        title = "Paper isolated classloader blocks cross-plugin class access",
+        rationale = "Paper blocks runtime class access when a paper-plugin.yml plugin sets " +
+            "join-classpath: false or declares a dependency only under dependencies.bootstrap, or " +
+            "when a legacy plugin.yml plugin accesses a paper-plugin.yml plugin that sets " +
+            "has-open-classloader: false.",
+        provenance = "PaperMC/Paper PaperPluginClassLoader and SpigotPluginClassLoader visibility rules",
+        fix = "Set join-classpath: true under dependencies.server in paper-plugin.yml, or set " +
+            "has-open-classloader: true on the target Paper plugin.",
+    )
+
     val DUPLICATE_PLUGIN_NAME = Rule(
         id = "S010",
         severity = Severity.CRITICAL,
@@ -96,6 +120,19 @@ object StackRules {
         fix = "Nothing urgent. Runtime libraries or a shared library plugin would remove the copies.",
     )
 
+    val TRANSITIVE_SHADING_COLLISION = Rule(
+        id = "S032",
+        severity = Severity.CRITICAL,
+        title = "High-risk transitive library shaded unrelocated across plugins",
+        rationale = "Unrelocated copies of bStats, Kyori Adventure, HikariCP, Gson, SnakeYAML, " +
+            "SLF4J, Caffeine or Netty across multiple plugins collide on overlapping plugin " +
+            "classloaders, causing LinkageError, ClassCastException, ServiceConfigurationError " +
+            "or bStats relocation-guard crashes at runtime.",
+        provenance = "Unrelocated high-risk transitive package roots fingerprinted by class ABI across installed jars",
+        fix = "Relocate shaded transitive libraries under each plugin's own package, or declare " +
+            "shared Maven coordinates in the descriptor `libraries:` section.",
+    )
+
     val JAVA_REQUIREMENT = Rule(
         id = "S040",
         severity = Severity.INFO,
@@ -137,9 +174,10 @@ object StackRules {
     )
 
     val all = listOf(
-        MISSING_HARD_DEPENDENCY, DEPENDENCY_CYCLE, DUPLICATE_PLUGIN_NAME, DUPLICATE_MAIN_CLASS,
+        MISSING_HARD_DEPENDENCY, DEPENDENCY_CYCLE, UNDECLARED_PLUGIN_DEPENDENCY,
+        ISOLATED_CLASSLOADER_BLOCKED, DUPLICATE_PLUGIN_NAME, DUPLICATE_MAIN_CLASS,
         NAME_SHADOWED_BY_PROVIDES, COMMAND_COLLISION, ALIAS_COLLISION, SHARED_LIBRARY_SKEW,
-        SHARED_LIBRARY_DUPLICATED, JAVA_REQUIREMENT, LEGACY_PLUGIN_PRESENT, MISSING_SOFT_DEPENDENCY,
-        FOLIA_MIX,
+        SHARED_LIBRARY_DUPLICATED, TRANSITIVE_SHADING_COLLISION, JAVA_REQUIREMENT,
+        LEGACY_PLUGIN_PRESENT, MISSING_SOFT_DEPENDENCY, FOLIA_MIX,
     )
 }

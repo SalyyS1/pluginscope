@@ -183,6 +183,17 @@ object JarRules {
         fix = "Relocate kotlin.** under your own package in the shadow configuration.",
     )
 
+    val BSTATS_UNRELOCATED = Rule(
+        id = "J024",
+        severity = Severity.CRITICAL,
+        title = "bStats Metrics shaded without relocation",
+        rationale = "bStats checks its own package name in a static initialiser and throws " +
+            "IllegalStateException during onEnable when org.bstats was not relocated under the " +
+            "plugin's own namespace.",
+        provenance = "org.bstats.Metrics static relocation guard in bstats-base",
+        fix = "Relocate org.bstats under your own package in ShadowJar or maven-shade-plugin.",
+    )
+
     val JAR_HYGIENE = Rule(
         id = "J030",
         severity = Severity.WARNING,
@@ -223,6 +234,18 @@ object JarRules {
         fix = "Move the dependency to `libraries:` in the descriptor.",
     )
 
+    val PAPER_DESCRIPTOR_DRIFT = Rule(
+        id = "J042",
+        severity = Severity.CRITICAL,
+        title = "paper-plugin.yml omits dependencies or entrypoints required on Paper",
+        rationale = "Paper ignores plugin.yml when paper-plugin.yml is present and isolates " +
+            "PaperPluginClassLoader so undeclared or bootstrap-only dependencies cannot be " +
+            "resolved at server runtime, failing with NoClassDefFoundError.",
+        provenance = "PaperMC/Paper PaperPluginParent and PaperPluginClassLoader isolation rules",
+        fix = "Declare every runtime plugin dependency under dependencies.server with " +
+            "join-classpath: true in paper-plugin.yml, and ensure bootstrapper/loader classes exist.",
+    )
+
     val UNREACHABLE_BUNDLE = Rule(
         id = "J050",
         severity = Severity.INFO,
@@ -248,7 +271,7 @@ object JarRules {
         MAIN_IN_SERVER_NAMESPACE, DESCRIPTOR_UNKNOWN_KEY, API_VERSION_ABSENT, API_VERSION_UNKNOWN,
         UNQUOTED_VERSION_SCALAR, BOTH_DESCRIPTORS, CLASS_VERSION_TOO_NEW, CLASS_VERSION_MIXED,
         SERVER_NAMESPACE_BUNDLED, PROVIDED_LIBRARY_BUNDLED, UNRELOCATED_LIBRARY,
-        KOTLIN_STDLIB_BUNDLED, JAR_HYGIENE, SIGNATURE_LEFTOVER, DEPENDENCY_SUSPECT,
-        RUNTIME_LIBRARIES_HINT, UNREACHABLE_BUNDLE, FOLIA_DECLARATION,
+        KOTLIN_STDLIB_BUNDLED, BSTATS_UNRELOCATED, JAR_HYGIENE, SIGNATURE_LEFTOVER, DEPENDENCY_SUSPECT,
+        RUNTIME_LIBRARIES_HINT, PAPER_DESCRIPTOR_DRIFT, UNREACHABLE_BUNDLE, FOLIA_DECLARATION,
     )
 }

@@ -80,4 +80,25 @@ class ReportFormatTest {
         val text = ConsoleReporter(color = false, verbose = true).render(report)
         assertTrue(text.contains("source:")) { text.take(400) }
     }
+
+    @Test
+    fun `SARIF physical locations carry relative URIs uriBaseId and startLine`() {
+        val run = Json.parseToJsonElement(SarifReporter.render(report)).jsonObject["runs"]!!
+            .jsonArray.single().jsonObject
+        val rules = run["tool"]!!.jsonObject["driver"]!!.jsonObject["rules"]!!.jsonArray
+        assertTrue(rules.all { !it.jsonObject["name"]!!.jsonPrimitive.content.contains(' ') })
+        assertTrue(rules.all { it.jsonObject["help"]?.jsonObject?.containsKey("markdown") == true })
+
+        for (result in run["results"]!!.jsonArray) {
+            val resObj = result.jsonObject
+            assertTrue(resObj.containsKey("ruleIndex"))
+            val phys = resObj["locations"]!!.jsonArray.single().jsonObject["physicalLocation"]!!.jsonObject
+            val art = phys["artifactLocation"]!!.jsonObject
+            val uri = art["uri"]!!.jsonPrimitive.content
+            assertTrue(!uri.startsWith("/") && !uri.contains('\\')) { "non-relative URI: $uri" }
+            assertEquals("%SRCROOT%", art["uriBaseId"]!!.jsonPrimitive.content)
+            val startLine = phys["region"]!!.jsonObject["startLine"]!!.jsonPrimitive.content.toInt()
+            assertTrue(startLine >= 1)
+        }
+    }
 }

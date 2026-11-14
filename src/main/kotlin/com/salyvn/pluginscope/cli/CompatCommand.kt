@@ -123,6 +123,10 @@ class RulesCommand : com.github.ajalt.clikt.core.CliktCommand(name = "rules") {
 
     override fun help(context: Context) = "Print every rule with its rationale and provenance."
 
+    private val markdown by option("--markdown", help = "Render as Markdown suitable for docs/rules.md").flag()
+
+    private val output by option("-o", "--output", help = "Write the rule catalogue to a file").path()
+
     override fun run() {
         val catalogues = listOf(
             "jar" to com.salyvn.pluginscope.jar.JarRules.all,
@@ -130,19 +134,56 @@ class RulesCommand : com.github.ajalt.clikt.core.CliktCommand(name = "rules") {
             "stack" to com.salyvn.pluginscope.stack.StackRules.all,
             "pack" to com.salyvn.pluginscope.pack.PackRules.all,
         )
-        val text = buildString {
-            for ((command, rules) in catalogues) {
-                appendLine("pluginscope $command  (${rules.size} rules)")
-                for (rule in rules.sortedBy { it.id }) {
-                    appendLine()
-                    appendLine("  ${rule.id}  [${rule.severity.label}]  ${rule.title}")
-                    appendLine("    why: ${rule.rationale}")
-                    rule.fix?.let { appendLine("    fix: $it") }
-                    appendLine("    src: ${rule.provenance}")
-                }
+        val text = if (markdown) {
+            buildString {
+                appendLine("# Rules")
                 appendLine()
+                appendLine("Every check pluginscope can report, as printed by `pluginscope rules` in version ${com.salyvn.pluginscope.core.BuildInfo.version}.")
+                appendLine("Each rule carries the source of the fact behind it, so a finding can be argued with.")
+                appendLine()
+                appendLine("Severities: `blocker` means the artifact does not load, `critical` means it loads and then")
+                appendLine("fails at runtime, `warning` means it works but depends on luck, `info` means no defect is")
+                appendLine("being claimed.")
+                for ((command, rules) in catalogues) {
+                    appendLine()
+                    appendLine("## pluginscope $command")
+                    appendLine()
+                    appendLine("${rules.size} rules.")
+                    for (rule in rules.sortedBy { it.id }) {
+                        appendLine()
+                        appendLine("### ${rule.id} - ${rule.title}")
+                        appendLine()
+                        appendLine("`${rule.severity.label}`")
+                        appendLine()
+                        appendLine("**Why it matters.** ${rule.rationale}")
+                        rule.fix?.let {
+                            appendLine()
+                            appendLine("**Fix.** $it")
+                        }
+                        appendLine()
+                        appendLine("**Source.** ${rule.provenance}")
+                    }
+                }
+            }
+        } else {
+            buildString {
+                for ((command, rules) in catalogues) {
+                    appendLine("pluginscope $command  (${rules.size} rules)")
+                    for (rule in rules.sortedBy { it.id }) {
+                        appendLine()
+                        appendLine("  ${rule.id}  [${rule.severity.label}]  ${rule.title}")
+                        appendLine("    why: ${rule.rationale}")
+                        rule.fix?.let { appendLine("    fix: $it") }
+                        appendLine("    src: ${rule.provenance}")
+                    }
+                    appendLine()
+                }
             }
         }
-        echo(text)
+        output?.let { target ->
+            target.parent?.let { java.nio.file.Files.createDirectories(it) }
+            java.nio.file.Files.writeString(target, text)
+            echo("Wrote rule catalogue to $target")
+        } ?: echo(text)
     }
 }

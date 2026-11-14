@@ -11,7 +11,7 @@ internal object DescriptorChecks {
     /**
      * `VALID_NAME` as compiled into paper-api: `^[A-Za-z0-9 _.-]+$`. Read out of
      * `org/bukkit/plugin/PluginDescriptionFile.class` in paper-api 26.2.build.116-stable, which is
-     * why the space is in there — it is genuinely accepted, however odd it looks.
+     * why the space is in there: it is genuinely accepted, however odd it looks.
      */
     private val LEGAL_NAME = Regex("^[A-Za-z0-9 _.-]+$")
 
@@ -112,6 +112,8 @@ internal object DescriptorChecks {
 
         checkDependencyHygiene(jar, sink)
 
+        checkPaperDescriptorDrift(jar, sink)
+
         if (descriptor.foliaSupported == true) {
             sink.add(
                 JarRules.FOLIA_DECLARATION,
@@ -190,6 +192,76 @@ internal object DescriptorChecks {
                 JarRules.DEPENDENCY_SUSPECT,
                 location = descriptor.kind.entryName,
                 detail = "Duplicated dependency entries: ${duplicates.joinToString(", ")}.",
+            )
+        }
+    }
+
+    private fun checkPaperDescriptorDrift(jar: JarInspection, sink: FindingSink) {
+        val paper = jar.descriptors[DescriptorKind.PAPER] ?: return
+
+        for ((field, fqcn) in listOf("bootstrapper" to paper.bootstrapper, "loader" to paper.loader)) {
+            if (fqcn.isNullOrBlank()) continue
+            val internal = fqcn.replace('.', '/')
+            if (!jar.contains(internal)) {
+                sink.add(
+                    JarRules.PAPER_DESCRIPTOR_DRIFT,
+                    location = "paper-plugin.yml: $field",
+                    detail = "Declared $field '$fqcn' is not among this jar's ${jar.classes.size} classes.",
+                    severityOverride = com.salyvn.pluginscope.core.Severity.BLOCKER,
+                )
+            }
+        }
+
+        val serverPhaseNames = paper.dependencies
+            .filter { it.phase == null || it.phase == "server" }
+            .map { it.name.lowercase() }
+            .toSet()
+        val bootstrapOnly = paper.dependencies
+            .filter { it.phase == "bootstrap" && it.name.lowercase() !in serverPhaseNames }
+            .map { it.name }
+            .distinct()
+        if (bootstrapOnly.isNotEmpty()) {
+            sink.add(
+                JarRules.PAPER_DESCRIPTOR_DRIFT,
+                location = "paper-plugin.yml: dependencies.bootstrap",
+                detail = "Declared only in dependencies.bootstrap and absent from dependencies.server: " +
+                    "${bootstrapOnly.joinToString(", ")}. PaperPluginClassLoader will not expose these classes at server runtime.",
+                severityOverride = com.salyvn.pluginscope.core.Severity.WARNING,
+            )
+        }
+
+        val legacy = jar.descriptors[DescriptorKind.LEGACY] ?: return
+        val paperJoinableServerDeps = paper.dependencies
+            .filter { (it.phase == null || it.phase == "server") && it.joinClasspath != false }
+            .map { it.name.lowercase() }
+            .toSet()
+        val missingFromPaper = legacy.dependencies
+            .filter { it.name.lowercase() !in paperJoinableServerDeps }
+            .map { it.name }
+            .distinct()
+        if (missingFromPaper.isNotEmpty()) {
+            sink.add(
+                JarRules.PAPER_DESCRIPTOR_DRIFT,
+                location = "paper-plugin.yml vs plugin.yml",
+                detail = "plugin.yml declares dependency(ies) [${missingFromPaper.joinToString(", ")}] " +
+                    "missing or isolated (join-classpath: false) in paper-plugin.yml dependencies.server; " +
+                    "Paper ignores plugin.yml and blocks classloader access.",
+                evidence = legacy.dependencies
+                    .filter { it.name.lowercase() !in paperJoinableServerDeps }
+                    .map { dep ->
+                        val kind = if (dep.required) "depend" else "softdepend"
+                        "plugin.yml $kind: ${dep.name}"
+                    },
+            )
+        }
+
+        if (legacy.libraries.isNotEmpty() && paper.loader.isNullOrBlank()) {
+            sink.add(
+                JarRules.PAPER_DESCRIPTOR_DRIFT,
+                location = "paper-plugin.yml vs plugin.yml",
+                detail = "plugin.yml declares ${legacy.libraries.size} Maven runtime library(ies), " +
+                    "but paper-plugin.yml has no `loader:` entrypoint to resolve libraries on Paper.",
+                evidence = legacy.libraries.take(4).map { "plugin.yml library: $it" },
             )
         }
     }

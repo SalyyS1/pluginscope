@@ -1,390 +1,229 @@
 # pluginscope
 
 [![build](https://github.com/SalyyS1/pluginscope/actions/workflows/build.yml/badge.svg)](https://github.com/SalyyS1/pluginscope/actions/workflows/build.yml)
+[![Web Inspector](https://img.shields.io/badge/web_inspector-client--side_JAR_audit-0284c7)](https://salyys1.github.io/pluginscope/)
 
-Static audits for Minecraft server plugins. It reads build output — jars, packs, a `plugins/`
-directory — and reports what will go wrong, without starting a server and without running any of
-the code it looks at.
+Static audits for Minecraft server plugins. It reads build output (`*.jar`, resource packs, and an entire `plugins/` directory) and reports what will fail at load time or runtime without starting a server and without executing untrusted plugin code.
 
-That last point is the reason it exists in this shape. A server owner can point it at a paid plugin
-they did not compile, and a developer can put the same binary in CI, because nothing is loaded into
-the JVM: class files are read as bytes, descriptors are parsed with YAML aliasing capped, packs are
-read as files.
+Nothing inspected is ever loaded into the JVM: class files are parsed as raw bytecode via ASM, `plugin.yml` and `paper-plugin.yml` descriptors are read through `SafeConstructor` with YAML alias expansion capped, and resource packs are inspected directly from disk or zip archives.
+
+Try the zero-backend browser `.jar` classloader and shading inspector at **[salyys1.github.io/pluginscope](https://salyys1.github.io/pluginscope/)**.
 
 Four commands, four questions:
 
 | Command | Question it answers |
 | --- | --- |
-| `jar` | Is this jar packaged correctly? What did it shade that the server already provides, and which Java release do its class files need? |
-| `compat` | Will it run against a given Minecraft version's API? Which classes and members does it call that are not there? |
-| `stack` | What breaks when this set of plugins is installed together — missing dependencies, duplicate plugins, command clashes, the same library in two different builds? |
-| `pack` | Will the resource pack it ships actually apply, or will it load and silently render missing textures? |
+| `jar` | Is this JAR packaged cleanly? Did it leave `org.bstats` unrelocated, drift between `paper-plugin.yml` and `plugin.yml`, shade server-provided libraries, or compile for the wrong Java release? |
+| `compat` | Will it run against a target Minecraft version's API? Which classes and members does its bytecode call that were removed or changed? |
+| `stack` | What breaks when this `plugins/` folder is installed together: Paper isolated classloader blocks, undeclared cross-plugin bytecode references, transitive shading collisions (`bStats`, `Adventure`, `HikariCP`, `Gson`, `SnakeYAML`), missing dependencies, or command clashes? |
+| `pack` | Will the resource pack it ships actually render, or will it load and silently fall back to missing textures? |
 
-There is also an `mcp` mode that serves the same analyses to an AI coding agent over the Model
-Context Protocol, so "audit this jar" becomes something the agent can do itself instead of
-guessing.
+`pluginscope mcp` also serves all analyses over the Model Context Protocol on `stdio` so coding agents can audit plugin artifacts directly.
 
-## Why these four
+## What is new in v0.2.0
 
-The failures above share a property: the server does not tell you about them.
-
-- A plugin that shades an unrelocated copy of a library the server already provides works on the
-  developer's machine and breaks on somebody else's, depending on load order and on what other
-  plugins ship.
-- A class file compiled for a newer Java release fails with `UnsupportedClassVersionError` at load,
-  before any of the plugin's own error handling can run.
-- A missing hard dependency produces one line in a startup log that is thousands of lines long.
-- A broken resource pack produces no server-side signal at all. Paper's
-  `PlayerResourcePackStatusEvent.Status` has seven values and none of them means "loaded, but half
-  the models fell back to missing-texture" — the client reports success and renders purple and
-  black.
-
-Everything reported carries a rule id, a severity that means one specific thing, and the source the
-underlying fact came from.
+- **Transitive Shading Collision Detection (`J024`, `S032`)**: Detects single-JAR unrelocated `org.bstats` (`J024`, catching bStats's static `IllegalStateException` relocation guard even on 1-class bundles) and multi-plugin transitive shading collisions (`S032`) across `org.bstats`, `net.kyori`, `com.zaxxer.hikari`, `com.google.gson`, `org.yaml.snakeyaml`, `org.slf4j`, `com.github.benmanes.caffeine`, and `io.netty`, backed by method/field/bytecode-version ABI fingerprinting.
+- **Paper Isolated Classloader & Descriptor Drift Audit (`J042`, `S003`, `S004`)**:
+  - `J042` catches dual-descriptor JARs (`paper-plugin.yml` + `plugin.yml`) where dependencies or Maven `libraries:` exist in `plugin.yml` but were omitted from `paper-plugin.yml`, missing `bootstrapper` / `loader` classes, and `dependencies.bootstrap`-only traps.
+  - `S003` scans cross-plugin bytecode calls across `plugins/` and flags plugins that reference another installed plugin's classes without declaring a dependency (`critical` under Paper's isolated `PaperPluginClassLoader`).
+  - `S004` flags `join-classpath: false` / `dependencies.bootstrap`-only callers and legacy `plugin.yml` plugins accessing `paper-plugin.yml` targets that set `has-open-classloader: false`.
+- **GitHub Code Scanning SARIF v2.1.0 & Composite Action (`action.yml`, `--sarif`)**: Repo-relative `artifactLocation.uri`, `uriBaseId: "%SRCROOT%"`, `region.startLine`, `ruleIndex`, Markdown remediation help, and simultaneous console + `--sarif <file>` output.
+- **Zero-Backend Browser JAR Inspector (`docs/index.html`)**: Client-side ZIP central directory + `DecompressionStream('deflate-raw')` + JVM `0xCAFEBABE` constant-pool analyzer with SARIF/JSON export.
 
 ## Requirements
 
-Java 21 or newer. Nothing else — the release jar is self-contained.
+Java 21 or newer. The release JAR is self-contained.
 
 ## Install
 
-Download `pluginscope-<version>.jar` from the
-[releases](https://github.com/SalyyS1/pluginscope/releases) page and run it:
+Download `pluginscope-0.2.0.jar` from [GitHub Releases](https://github.com/SalyyS1/pluginscope/releases) and run:
 
-```
-java -jar pluginscope.jar --help
+```bash
+java -jar pluginscope-0.2.0.jar --help
 ```
 
 ## Quick start
 
+```bash
+# Audit one plugin JAR against a target Minecraft server version
+java -jar pluginscope-0.2.0.jar jar MyPlugin.jar --target 26.2
+
+# Check API compatibility against Paper 1.21.4 (downloads and caches paper-api once)
+java -jar pluginscope-0.2.0.jar compat MyPlugin.jar --mc 1.21.4
+
+# Audit an entire server plugins/ folder for classloader blocks and shading collisions
+java -jar pluginscope-0.2.0.jar stack /srv/mc/plugins
+
+# Emit console output AND write OASIS SARIF v2.1.0 in a single run
+java -jar pluginscope-0.2.0.jar stack /srv/mc/plugins --sarif pluginscope.sarif
+
+# Validate a resource pack directory or zip
+java -jar pluginscope-0.2.0.jar pack pack.zip --mc 26.2
+
+# Print all 70 rules with rationale, remediation, and primary source provenance
+java -jar pluginscope-0.2.0.jar rules
 ```
-# One jar, checked as if it were going onto a 26.2 server
-java -jar pluginscope.jar jar MyPlugin.jar --target 26.2
 
-# Will it run on 1.21.4? Downloads that version's paper-api once and caches it
-java -jar pluginscope.jar compat MyPlugin.jar --mc 1.21.4
+## GitHub Actions & Code Scanning (SARIF v2.1.0)
 
-# A whole server's plugins folder, as one install set
-java -jar pluginscope.jar stack /srv/mc/plugins
+Use the composite action `SalyyS1/pluginscope@v0.2.0` to gate pull requests and publish shading, packaging, and Paper classloader findings directly to the GitHub **Security -> Code scanning** tab:
 
-# The resource pack the plugin ships
-java -jar pluginscope.jar pack pack.zip --mc 26.2
+```yaml
+name: Plugin Audit
+on: [push, pull_request]
 
-# Every rule, with its rationale and its source
-java -jar pluginscope.jar rules
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  pluginscope:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Build plugin JAR
+        run: ./gradlew build --no-daemon
+
+      - name: Run PluginScope static audit
+        uses: SalyyS1/pluginscope@v0.2.0
+        with:
+          command: jar
+          path: build/libs
+          target: '1.21.4'
+          fail-on: never
+          sarif-file: pluginscope.sarif
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: pluginscope.sarif
 ```
 
-## What the output looks like
+## Sample terminal output
 
-Both samples below are real output, captured from a deliberately broken pair of demo plugins built
-for this purpose — a toy jar that shades gson and the Kotlin runtime under their original names,
-misspells `depend` as `depends`, ships its own source file, and declares no `api-version`.
+Single-JAR audit catching unrelocated `org.bstats`, dual-descriptor dependency drift between `plugin.yml` and `paper-plugin.yml`, server-provided Gson bundling, and leftover JAR signatures:
 
-```
-$ java -jar pluginscope.jar jar plugins/DemoPlugin.jar --target 1.21.4
+```text
+$ java -jar pluginscope-0.2.0.jar jar build/libs/CrateMaster.jar --target 1.21.4
 
-jar: D:\tmp\demo-server\plugins\DemoPlugin.jar
-  plugin       DemoPlugin
-  version      1.0.0
-  descriptor   plugin.yml
-  api-version  (none)
-  size         0.01 MiB
-  classes      13 (1 own)
+jar: /workspace/build/libs/CrateMaster.jar
+  plugin       CrateMaster
+  version      3.0.0
+  descriptor   paper-plugin.yml
+  api-version  1.21.4
+  size         0.18 MiB
+  classes      24 (4 own)
   needs java   21
-  own package  com.example.demo
+  own package  com.acme.crates
   kotlin       no
 
-[warning] J006  Descriptor contains a key the format does not define
-    plugin.yml
-      Ignored by the server: depends.
-        'depends' looks like 'depend'
-    fix: Remove the key or correct the spelling.
+[critical] J024  bStats Metrics shaded without relocation
+    org.bstats
+      2 bStats class(es) (9 KiB) shipped under org.bstats instead of com.acme.crates.
+        org.bstats.bukkit.Metrics
+        org.bstats.charts.SimplePie
+    fix: Relocate org.bstats under your own package in ShadowJar or maven-shade-plugin.
 
-[warning] J007  No api-version, so the plugin loads in legacy mode
-    plugin.yml
-      No api-version, so the server treats this plugin as pre-1.13 legacy.
-    fix: Declare the api-version your code was compiled against.
+[critical] J042  paper-plugin.yml omits dependencies or entrypoints required on Paper
+    paper-plugin.yml vs plugin.yml
+      plugin.yml declares dependency(ies) [Vault, PlaceholderAPI] missing or isolated (join-classpath: false) in paper-plugin.yml dependencies.server; Paper ignores plugin.yml and blocks classloader access.
+        plugin.yml depend: Vault
+        plugin.yml softdepend: PlaceholderAPI
+    fix: Declare every runtime plugin dependency under dependencies.server with join-classpath: true in paper-plugin.yml, and ensure bootstrapper/loader classes exist.
 
 [warning] J021  Bundles a library the server already provides
     com.google.gson
-      5 classes, 1 KiB. The server provides com.google.code.gson:gson 2.14.0.
-        server side: paper-api 26.2.build.116-stable POM, compile scope
+      6 classes, 28 KiB. The server provides com.google.code.gson:gson 2.14.0.
     fix: Depend on it as compileOnly, or relocate it if you genuinely need a different version.
-
-[warning] J022  Third-party library shaded without relocation
-    org.apache.commons
-      4 classes, 0 KiB, outside the plugin's own package (com.example.demo).
-        org.apache.commons.lang3.StringUtils1
-        org.apache.commons.lang3.StringUtils2
-        org.apache.commons.lang3.StringUtils3
-    fix: Relocate shaded dependencies under your own package, or declare them in `libraries:`.
-
-[warning] J023  Kotlin standard library shaded without relocation
-    kotlin.jvm.internal
-      3 classes across 1 package(s), 0 KiB, shipped under their original names.
-        kotlin.jvm.internal: 3 classes, 0 KiB
-    fix: Relocate kotlin.** under your own package in the shadow configuration.
-
-[warning] J030  Jar contains entries that do not belong in a release build
-    META-INF/maven
-      1 build-metadata file(s) from shaded dependencies.
-        com.google.code.gson/gson
-    source files
-      1 source file(s) shipped in the release jar.
-        DemoPlugin.java
-    fix: Exclude these from the packaging task.
-
-Summary: 7 warnings
 ```
 
-The same three jars looked at as one install set. Nothing here is visible from any single jar: the
-gson skew and the alias clash are properties of the combination.
+Multi-JAR `stack` audit catching cross-plugin `PaperPluginClassLoader` isolation failures and unrelocated HikariCP + bStats collisions across installed plugins:
 
-```
-$ java -jar pluginscope.jar stack plugins
+```text
+$ java -jar pluginscope-0.2.0.jar stack /srv/mc/plugins
 
-plugins directory: D:\tmp\demo-server\plugins
-  jars           3
-  plugins        3
-  total size     0.0 MiB
-  target         Paper
-    DemoBank     0.9.1  api 1.21  java 21
-    DemoEconomy  2.3.0  api 1.21  java 21
-    DemoPlugin   1.0.0  api none  java 21
+plugins directory: /srv/mc/plugins
+  jars             3
+  plugins          3
+  total size       1.4 MiB
+  target           Paper
+    LegacyAuctions 0.9    api 1.20.4  java 21
+    SkyShop        1.4.2  api 1.21.4  java 21  folia
+    VaultCore      2.1.0  api 1.21.4  java 21  folia
 
-[blocker] S001  Hard dependency is not installed
-    DemoEconomy -> Vault
-      DemoEconomy requires Vault, which is not in this directory.
-    fix: Install the dependency, or make it a soft dependency if the plugin can run without it.
+[critical] S003  Bytecode references an installed plugin without declaring a dependency
+    SkyShop -> VaultCore
+      SkyShop (paper-plugin.yml) references VaultCore classes without declaring VaultCore in dependencies.server; PaperPluginClassLoader throws NoClassDefFoundError.
+        com.acme.skyshop.SkyShopPlugin#onEnable:42 -> com.acme.vaultcore.LedgerApi#deposit()V
+    fix: Declare the target plugin under dependencies.server (paper-plugin.yml) or depend/softdepend (plugin.yml).
 
-[warning] S030  Several plugins ship the same unrelocated library, in different builds
-    com.google.gson
-      Shipped unrelocated by 2 plugins in 2 different builds.
-        DemoEconomy: 5 classes, 1 KiB
-        DemoPlugin: 5 classes, 1 KiB
-        the server itself provides com.google.code.gson:gson
-    fix: Relocate the library in your own plugins. For third-party jars, report it upstream.
+[critical] S004  Paper isolated classloader blocks cross-plugin class access
+    LegacyAuctions -> VaultCore
+      Legacy plugin.yml plugin LegacyAuctions depends on Paper plugin VaultCore, which sets has-open-classloader: false and blocks class visibility.
+    fix: Set join-classpath: true under dependencies.server in paper-plugin.yml, or set has-open-classloader: true on the target Paper plugin.
 
-[warning] S041  Plugin loads in legacy mode
-    DemoPlugin
-      No api-version in plugin.yml, so the server applies legacy conversion to it.
-    fix: Update the plugin, or ask its author to declare an api-version.
-
-[info] S021  A command alias is claimed by more than one plugin
-    /bal
-      An alias of DemoEconomy, and the command name of DemoBank.
-    fix: Drop the overlapping alias from one of the plugins.
-
-[info] S040  Java release required by this plugin set
-    DemoBank-0.9.1.jar
-      Highest class file version is 65, so this set needs Java 21 or newer.
-    fix: Run at least this Java release, or replace the plugin that raises the floor.
-
-Summary: 1 blocker, 2 warnings, 2 infos
+[critical] S032  High-risk transitive library shaded unrelocated across plugins
+    com.zaxxer.hikari
+      High-risk transitive library com.zaxxer.hikari shaded by 2 plugins in 2 incompatible ABI builds.
+        SkyShop: 28 classes, 152 KiB
+        VaultCore: 24 classes, 138 KiB
+        HikariCP pool, MBean and SLF4J bindings collide across shared plugin classloaders
+    fix: Relocate shaded transitive libraries under each plugin's own package, or declare shared Maven coordinates in the descriptor `libraries:` section.
 ```
 
-Findings are grouped by rule, so a jar with forty hits of one rule reads as one problem. `--verbose`
-lists every hit and prints the provenance line for each rule.
-
-## Severity means something specific
+## Severity tiers
 
 | Severity | Meaning |
 | --- | --- |
-| `blocker` | The artifact will not load at all, or is rejected before enable. |
-| `critical` | It loads, then fails at runtime as soon as the affected code path is taken. |
-| `warning` | It works today, but depends on luck: load order, another plugin's choices, a version bump. |
-| `info` | Worth a human's attention. No defect is being claimed. |
+| `blocker` | The artifact will not load at all, or is rejected before `onEnable`. |
+| `critical` | It loads, then fails at runtime (`NoClassDefFoundError`, `LinkageError`, `IllegalStateException`, `SecurityException`) when the affected path executes. |
+| `warning` | It works today by accident of load order, server version, or installed neighbours. |
+| `info` | Diagnostic context worth human attention; no defect is claimed. |
 
-`--fail-on` picks the lowest severity that makes the process exit non-zero. The default is
-`critical`, so a CI job fails on things that will actually break and stays quiet about the rest.
-`--fail-on never` always exits zero.
+`--fail-on` sets the lowest severity that causes a non-zero exit code (`critical` by default; `never` always exits `0`). Every rule is documented in [docs/rules.md](docs/rules.md).
 
-All 65 rules are listed in [docs/rules.md](docs/rules.md) with their rationale and their source.
-`pluginscope rules` prints the same catalogue from whichever version you are running.
+## Using it from an AI agent (MCP)
 
-## Output for machines
-
-`--format json` prints the full report with stable field names. `--format sarif` writes SARIF
-2.1.0, which GitHub code scanning ingests, so findings land on the pull request that introduced
-them.
-
-```yaml
-- name: Audit the plugin jar
-  run: |
-    java -jar pluginscope.jar jar build/libs/*.jar \
-      --target 26.2 --format sarif -o pluginscope.sarif --fail-on never
-
-- uses: github/codeql-action/upload-sarif@v3
-  with:
-    sarif_file: pluginscope.sarif
-```
-
-Rules are declared in `tool.driver.rules` because code scanning silently drops results whose rule
-is not declared, and fingerprints are location-based rather than line-based, so reformatting a file
-does not invent new alerts.
-
-## Using it from an AI agent
-
-`pluginscope mcp` speaks the Model Context Protocol on stdin and stdout. Register it once and an
-agent can audit jars on its own:
+`pluginscope mcp` speaks the Model Context Protocol over `stdio`:
 
 ```json
 {
   "mcpServers": {
     "pluginscope": {
       "command": "java",
-      "args": ["-jar", "/absolute/path/to/pluginscope.jar", "mcp"]
+      "args": ["-jar", "/absolute/path/to/pluginscope-0.2.0.jar", "mcp"]
     }
   }
 }
 ```
 
-The tools exposed are `scan_jar`, `check_api_compat`, `audit_plugins_dir`, `validate_pack` and
-`list_rules`. All of them are marked read-only, they return the same JSON the CLI produces, and a
-failure that the agent can act on (a path that does not exist, an argument that is missing) comes
-back as tool content rather than as a protocol error.
-
-## The commands in detail
-
-### `jar` — one plugin, on its own
-
-```
-pluginscope jar <jar or directory>... [--target 26.2 | --target-java 21] [--no-reachability] [--disable J021]
-```
-
-It reads the descriptor, the class files and the zip entries, and reports:
-
-- descriptor problems that stop a load: missing required fields, a main class that is not in the
-  jar, a plugin name outside the accepted character set, a main class inside `org.bukkit`
-- descriptor problems that silently do nothing: a key the format does not define, which is how
-  `depends:` instead of `depend:` reaches production with the dependency unenforced
-- `api-version` missing, which puts the plugin into legacy handling, or malformed
-- classes compiled for a newer Java release than the target server runs, and bundled code compiled
-  for a newer release than the plugin's own classes
-- server namespaces shipped inside the jar (`org/bukkit`, `io/papermc`, `net/minecraft`, …)
-- libraries the server already provides, shipped again
-- third-party libraries and the Kotlin runtime shaded without relocation
-- packaging leftovers: sources, `META-INF/maven`, editor droppings, nested jars, signature files
-  that no longer match after shading, a `Class-Path` the plugin classloader ignores
-- how much of each bundled library is never referenced, as a hint for minimisation
-
-Give `--target` and the Java check becomes exact; leave it out and the report still tells you which
-release the class files need.
-
-### `compat` — one plugin against one server API
-
-```
-pluginscope compat <jar> (--mc 1.21.4 | --api paper-api.jar...) [--include-prefix net.kyori.adventure] [--no-deprecated]
-```
-
-Every Bukkit and Paper reference in the jar is resolved against the API you name, walking the class
-hierarchy so inherited members resolve the way the JVM would. `--mc` downloads that version's
-`paper-api` from Paper's repository once, verifies it against the repository's own checksum, and
-caches it under `~/.pluginscope/api-cache`; both the historical `1.21.4-R0.1-SNAPSHOT` and the
-current `26.2.build.N-stable` version shapes are understood.
-
-Two deliberate choices about false positives:
-
-- A member is only reported missing when the whole ancestry of its owner is present in the API you
-  supplied. If part of the chain is outside it, the answer is silence rather than a guess, because
-  nobody ever passes the complete transitive classpath.
-- References into `net.minecraft` and `craftbukkit` are reported separately as internals, not as
-  API breakage. They are not part of the API and were never promised to survive a version bump.
-
-One caveat the tool cannot see: Paper rewrites some legacy calls while loading a plugin that
-declares an older `api-version`, so a small number of "member does not exist" findings are repaired
-for you at load time. Treat `C002` as "prove this one" rather than as a verdict when you are
-checking an old plugin against a much newer server.
-
-### `stack` — a whole install set
-
-```
-pluginscope stack <plugins directory> [--folia]
-```
-
-Reports the properties that belong to the set rather than to any one jar: a hard dependency that is
-not installed, a dependency cycle, two jars claiming one plugin name or one main class, commands and
-aliases claimed twice, the same unrelocated library shipped by several plugins in different builds,
-the Java release the whole set needs, and which plugins load in legacy mode. `--folia` additionally
-reports plugins that do not declare Folia support, which on Folia means they are simply absent.
-
-For per-jar thread-safety analysis under Folia — where the plugin declares support but the code is
-not actually safe — use [foliascan](https://github.com/SalyyS1/foliascan), which is the other half
-of this pair.
-
-### `pack` — the resource pack a plugin ships
-
-```
-pluginscope pack <directory or zip> [--mc 26.2 | --pack-format 88] [--against other-pack.zip]... [--no-fetch]
-```
-
-Validates the pack against a target version's format, resolves references inside the pack, and looks
-for the collisions that make two plugins' packs quietly overwrite each other. `--pack-format` makes
-the whole run offline; `--mc` looks the number up and caches it.
-
-## What it does not do
-
-- **No thread-safety or dataflow analysis.** Whether a plugin is safe under Folia's regionised
-  threading is a different question, answered by `foliascan`.
-- **No malware scanning.** Paper's own Hangar scanner covers that ground on uploads.
-- **No schema engine.** Pack validation checks structure, references and collisions; it does not
-  reimplement the full mcdoc schemas, and it does not try to out-validate Spyglass in an editor.
-- **Reachability is static.** Reflection, `Class.forName` and resource-driven wiring are invisible,
-  so a low reachability number is a hint to look, never an instruction to delete.
-- **The provided-library table covers what `paper-api` exposes at compile scope.** The server's own
-  runtime dependencies are left out on purpose: whether a plugin classloader can reach them has not
-  been verified here, and guessing would produce confident bad advice.
-- **Pack format numbers are fetched, not bundled.** The published source carries no licence, so
-  nothing is vendored; supply `--pack-format` to work entirely offline.
-
-## Where the facts come from
-
-Every rule states a fact — what the server rejects, what a class file version means, what a pack
-field may contain — and every fact was read from a primary source: the published `paper-api` POM,
-the constant pool of `PluginDescriptionFile`, `apiVersioning.json` inside the API jar, the JVM
-specification, the pack schema descriptions in vanilla-mcdoc, the MCP specification repository.
-
-The source travels with the rule. `pluginscope rules` prints it, and `--verbose` prints it beside
-each finding, so a claim can be checked instead of believed. `NOTICE` records the whole list.
-
-## Building from source
-
-```
-./gradlew build
-```
-
-Produces `build/libs/pluginscope-<version>.jar` (the runnable, self-contained one) and a `-thin`
-jar. Tests run as part of `build` and use real compiled fixture jars, including a clean plugin that
-must produce no findings at all — a tool that complains about correct builds gets switched off and
-never run again.
-
-## Prior art
-
-pluginscope contains no code from other projects, but it is not the first tool in this area and it
-would be dishonest to imply otherwise. The closest neighbours, all worth knowing about:
-[mcdrift](https://github.com/kitsune-de/mcdrift) for Minecraft version drift with SARIF output,
-[jarhc](https://github.com/smarkwal/jarhc) for generic jar health,
-[japicmp](https://github.com/siom79/japicmp) and [revapi](https://github.com/revapi/revapi) for API
-diffing, [animal-sniffer](https://github.com/mojohaus/animal-sniffer) for checking a jar against a
-recorded API surface, [SpyglassMC](https://github.com/SpyglassMC/Spyglass) and
-[vanilla-mcdoc](https://github.com/SpyglassMC/vanilla-mcdoc) for pack schemas, and
-[misode/mcmeta](https://github.com/misode/mcmeta) for version data. `NOTICE` has the full list with
-licences and what each one contributed to the design.
+Exposed read-only tools: `scan_jar`, `check_api_compat`, `audit_plugins_dir`, `validate_pack`, and `list_rules`.
 
 ## Companion Minecraft Toolchain
 
 | Tool | Purpose |
 | --- | --- |
-| [foliascan](https://github.com/SalyyS1/foliascan) | Bytecode and taint-flow verifier for Folia regionized multithreading (`CLI`, GitHub Action, and [browser JAR scanner](https://salyys1.github.io/foliascan/)). |
-| [serverdoctor](https://github.com/SalyyS1/serverdoctor) | Offline diagnostics across server logs, configs, JVM flags, crash reports, worlds, and operator/whitelist files (`CLI` + `mcp`). |
-| [minecraftkit](https://github.com/SalyyS1/minecraftkit) | Offline RPG and Paper/Folia API catalog, 10 `/mc:*` coding agent skills, [web API explorer](https://salyys1.github.io/minecraftkit/), and stdio MCP server. |
-| [mcstage](https://github.com/SalyyS1/mcstage) | Standalone CLI that boots a real Paper, Folia, or Purpur server, installs a plugin, drives the console, and asserts on logs. |
-| [glyphsmith](https://github.com/SalyyS1/glyphsmith) | Resource pack font compiler turning PNGs and coordinates into Minecraft bitmap glyphs and negative-space shifts. |
+| [foliascan](https://github.com/SalyyS1/foliascan) | Bytecode and regional taint-flow verifier for Folia multithreading (`CLI`, SARIF GitHub Action, and [browser JAR scanner](https://salyys1.github.io/foliascan/)). |
+| [serverdoctor](https://github.com/SalyyS1/serverdoctor) | Offline diagnostics for Folia region stalls, G1GC/ZGC pauses, Paper Moonrise chunk I/O, configs, and crash reports (`CLI`, `mcp`, and [browser log analyzer](https://salyys1.github.io/serverdoctor/)). |
+| [minecraftkit](https://github.com/SalyyS1/minecraftkit) | Offline Paper/Folia API catalog, `/mc:*` coding agent skills, [web API explorer](https://salyys1.github.io/minecraftkit/), and stdio MCP server. |
+| [mcstage](https://github.com/SalyyS1/mcstage) | Standalone harness that boots a real Paper, Folia, or Purpur server, installs plugins, drives console commands, and asserts on logs. |
+| [glyphsmith](https://github.com/SalyyS1/glyphsmith) | Resource pack font compiler turning PNG sprites into Minecraft bitmap glyphs and negative-space shifts. |
+
+## Building from source
+
+```bash
+./gradlew test shadowJar --no-daemon
+```
+
+Produces `build/libs/pluginscope-0.2.0.jar` (self-contained shaded CLI) and runs the full JUnit 6 suite against compiled bytecode fixtures.
 
 ## Licence
 
-Apache-2.0. See `LICENSE`.
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-pluginscope is an independent project by [SalyVn](https://github.com/SalyyS1). It is not affiliated
-with, endorsed by or sponsored by PaperMC, Mojang or Microsoft, and it bundles no Minecraft code or
-game data.
+pluginscope is an independent project by [SalyVn](https://github.com/SalyyS1). It is not affiliated with, endorsed by, or sponsored by PaperMC, Mojang, or Microsoft.

@@ -1,6 +1,6 @@
 # Rules
 
-Every check pluginscope can report, as printed by `pluginscope rules` in version 0.1.1.
+Every check pluginscope can report, as printed by `pluginscope rules` in version 0.2.0.
 Each rule carries the source of the fact behind it, so a finding can be argued with.
 
 Severities: `blocker` means the artifact does not load, `critical` means it loads and then
@@ -9,9 +9,9 @@ being claimed.
 
 ## pluginscope jar
 
-23 rules.
+25 rules.
 
-### J001 — No plugin descriptor
+### J001 - No plugin descriptor
 
 `info`
 
@@ -21,7 +21,7 @@ being claimed.
 
 **Source.** PaperMC/Paper plugin loading requires one of the two descriptors
 
-### J002 — Descriptor is missing a required field
+### J002 - Descriptor is missing a required field
 
 `blocker`
 
@@ -31,7 +31,7 @@ being claimed.
 
 **Source.** PaperMC/Paper paper-api PluginDescriptionFile required keys
 
-### J003 — Descriptor could not be parsed
+### J003 - Descriptor could not be parsed
 
 `blocker`
 
@@ -41,7 +41,7 @@ being claimed.
 
 **Source.** SnakeYAML parse failure while reading the descriptor
 
-### J004 — Main class is not inside the jar
+### J004 - Main class is not inside the jar
 
 `blocker`
 
@@ -51,7 +51,7 @@ being claimed.
 
 **Source.** Compared descriptor `main` against the jar's class entries
 
-### J005 — Plugin name contains characters the server rejects
+### J005 - Plugin name contains characters the server rejects
 
 `critical`
 
@@ -61,7 +61,7 @@ being claimed.
 
 **Source.** PaperMC/Paper plugin name validation pattern
 
-### J006 — Descriptor contains a key the format does not define
+### J006 - Descriptor contains a key the format does not define
 
 `warning`
 
@@ -71,7 +71,7 @@ being claimed.
 
 **Source.** Key list taken from the descriptor format definitions
 
-### J007 — No api-version, so the plugin loads in legacy mode
+### J007 - No api-version, so the plugin loads in legacy mode
 
 `warning`
 
@@ -81,7 +81,7 @@ being claimed.
 
 **Source.** PaperMC/Paper legacy plugin handling keyed off a missing api-version
 
-### J008 — api-version is not a value the server recognises
+### J008 - api-version is not a value the server recognises
 
 `warning`
 
@@ -91,7 +91,7 @@ being claimed.
 
 **Source.** Accepted values from Paper's api-version list
 
-### J009 — Both plugin.yml and paper-plugin.yml are present
+### J009 - Both plugin.yml and paper-plugin.yml are present
 
 `warning`
 
@@ -101,7 +101,7 @@ being claimed.
 
 **Source.** Paper plugin loader prefers paper-plugin.yml when both exist
 
-### J010 — Compiled for a newer Java than the target server runs
+### J010 - Compiled for a newer Java than the target server runs
 
 `critical`
 
@@ -111,7 +111,7 @@ being claimed.
 
 **Source.** JVMS class file major versions mapped to Java releases
 
-### J011 — Bundled code targets a newer Java than the plugin's own classes
+### J011 - Bundled code targets a newer Java than the plugin's own classes
 
 `info`
 
@@ -121,7 +121,7 @@ being claimed.
 
 **Source.** Class file major versions compared across jar entries
 
-### J012 — Main class sits in the server's namespace
+### J012 - Main class sits in the server's namespace
 
 `blocker`
 
@@ -131,7 +131,7 @@ being claimed.
 
 **Source.** paper-api PluginDescriptionFile: "main may not be within the org.bukkit namespace"
 
-### J013 — Version-like value is unquoted, so YAML changed it
+### J013 - Version-like value is unquoted, so YAML changed it
 
 `warning`
 
@@ -141,7 +141,7 @@ being claimed.
 
 **Source.** SnakeYAML's YAML 1.1 float resolver, applied to the same descriptor the server loads with org.yaml.snakeyaml.Yaml (referenced from paper-api PluginDescriptionFile)
 
-### J020 — Jar ships classes from the server's own namespace
+### J020 - Jar ships classes from the server's own namespace
 
 `critical`
 
@@ -151,7 +151,7 @@ being claimed.
 
 **Source.** Package roots owned by the server and Mojang
 
-### J021 — Bundles a library the server already provides
+### J021 - Bundles a library the server already provides
 
 `warning`
 
@@ -161,7 +161,7 @@ being claimed.
 
 **Source.** Dependencies of paper-api and the server runtime
 
-### J022 — Third-party library shaded without relocation
+### J022 - Third-party library shaded without relocation
 
 `warning`
 
@@ -171,7 +171,7 @@ being claimed.
 
 **Source.** Class entries outside the plugin's own package root
 
-### J023 — Kotlin standard library shaded without relocation
+### J023 - Kotlin standard library shaded without relocation
 
 `warning`
 
@@ -181,7 +181,17 @@ being claimed.
 
 **Source.** kotlin/** entries outside the plugin's own package root
 
-### J030 — Jar contains entries that do not belong in a release build
+### J024 - bStats Metrics shaded without relocation
+
+`critical`
+
+**Why it matters.** bStats checks its own package name in a static initialiser and throws IllegalStateException during onEnable when org.bstats was not relocated under the plugin's own namespace.
+
+**Fix.** Relocate org.bstats under your own package in ShadowJar or maven-shade-plugin.
+
+**Source.** org.bstats.Metrics static relocation guard in bstats-base
+
+### J030 - Jar contains entries that do not belong in a release build
 
 `warning`
 
@@ -191,7 +201,7 @@ being claimed.
 
 **Source.** Entry list of the jar
 
-### J031 — Signature files survived shading
+### J031 - Signature files survived shading
 
 `critical`
 
@@ -201,7 +211,7 @@ being claimed.
 
 **Source.** META-INF signature entries alongside merged content
 
-### J040 — Dependency declaration is contradictory
+### J040 - Dependency declaration is contradictory
 
 `warning`
 
@@ -211,7 +221,7 @@ being claimed.
 
 **Source.** depend / softdepend / loadbefore / provides of the descriptor
 
-### J041 — Shaded dependency could be a runtime library instead
+### J041 - Shaded dependency could be a runtime library instead
 
 `info`
 
@@ -221,7 +231,17 @@ being claimed.
 
 **Source.** `libraries:` support in the plugin descriptor
 
-### J050 — Most of a bundled library is never referenced
+### J042 - paper-plugin.yml omits dependencies or entrypoints required on Paper
+
+`critical`
+
+**Why it matters.** Paper ignores plugin.yml when paper-plugin.yml is present and isolates PaperPluginClassLoader so undeclared or bootstrap-only dependencies cannot be resolved at server runtime, failing with NoClassDefFoundError.
+
+**Fix.** Declare every runtime plugin dependency under dependencies.server with join-classpath: true in paper-plugin.yml, and ensure bootstrapper/loader classes exist.
+
+**Source.** PaperMC/Paper PaperPluginParent and PaperPluginClassLoader isolation rules
+
+### J050 - Most of a bundled library is never referenced
 
 `info`
 
@@ -231,7 +251,7 @@ being claimed.
 
 **Source.** Reference graph between classes inside the jar
 
-### J060 — Folia support is declared
+### J060 - Folia support is declared
 
 `info`
 
@@ -245,7 +265,7 @@ being claimed.
 
 5 rules.
 
-### C001 — Referenced API class does not exist in the target API
+### C001 - Referenced API class does not exist in the target API
 
 `critical`
 
@@ -255,7 +275,7 @@ being claimed.
 
 **Source.** Class entries of the API jar(s) passed to --api
 
-### C002 — Referenced API member does not exist in the target API
+### C002 - Referenced API member does not exist in the target API
 
 `critical`
 
@@ -265,7 +285,7 @@ being claimed.
 
 **Source.** Member tables of the API jar(s), resolved through the class hierarchy; rewriting caveat from Paper's load-time class processing (Commodore)
 
-### C010 — Referenced API member is deprecated in the target API
+### C010 - Referenced API member is deprecated in the target API
 
 `info`
 
@@ -275,7 +295,7 @@ being claimed.
 
 **Source.** @Deprecated annotations and ACC_DEPRECATED flags in the API jar(s)
 
-### C020 — Uses server internals rather than the plugin API
+### C020 - Uses server internals rather than the plugin API
 
 `warning`
 
@@ -285,7 +305,7 @@ being claimed.
 
 **Source.** Reference owner package, matched against the server's internal namespaces
 
-### C030 — No references to the checked namespaces
+### C030 - No references to the checked namespaces
 
 `info`
 
@@ -297,9 +317,9 @@ being claimed.
 
 ## pluginscope stack
 
-13 rules.
+16 rules.
 
-### S001 — Hard dependency is not installed
+### S001 - Hard dependency is not installed
 
 `blocker`
 
@@ -309,7 +329,7 @@ being claimed.
 
 **Source.** depend / dependencies of each descriptor, compared with the plugin set
 
-### S002 — Hard dependencies form a cycle
+### S002 - Hard dependencies form a cycle
 
 `critical`
 
@@ -319,7 +339,27 @@ being claimed.
 
 **Source.** Cycle search over the hard-dependency graph
 
-### S010 — Two jars declare the same plugin name
+### S003 - Bytecode references an installed plugin without declaring a dependency
+
+`critical`
+
+**Why it matters.** For paper-plugin.yml plugins, PaperPluginClassLoader isolates classloaders and refuses to load classes from undeclared plugins, throwing NoClassDefFoundError even when the target plugin is installed. For legacy plugin.yml plugins, load order becomes arbitrary.
+
+**Fix.** Declare the target plugin under dependencies.server (paper-plugin.yml) or depend/softdepend (plugin.yml).
+
+**Source.** Cross-plugin bytecode references compared with descriptor dependency declarations
+
+### S004 - Paper isolated classloader blocks cross-plugin class access
+
+`critical`
+
+**Why it matters.** Paper blocks runtime class access when a paper-plugin.yml plugin sets join-classpath: false or declares a dependency only under dependencies.bootstrap, or when a legacy plugin.yml plugin accesses a paper-plugin.yml plugin that sets has-open-classloader: false.
+
+**Fix.** Set join-classpath: true under dependencies.server in paper-plugin.yml, or set has-open-classloader: true on the target Paper plugin.
+
+**Source.** PaperMC/Paper PaperPluginClassLoader and SpigotPluginClassLoader visibility rules
+
+### S010 - Two jars declare the same plugin name
 
 `critical`
 
@@ -329,7 +369,7 @@ being claimed.
 
 **Source.** `name` of each descriptor in the directory
 
-### S011 — Two jars declare the same main class
+### S011 - Two jars declare the same main class
 
 `critical`
 
@@ -339,7 +379,7 @@ being claimed.
 
 **Source.** `main` of each descriptor in the directory
 
-### S012 — A plugin name is also claimed through `provides`
+### S012 - A plugin name is also claimed through `provides`
 
 `warning`
 
@@ -349,7 +389,7 @@ being claimed.
 
 **Source.** `provides` compared with the installed plugin names
 
-### S020 — Two plugins register the same command
+### S020 - Two plugins register the same command
 
 `warning`
 
@@ -359,7 +399,7 @@ being claimed.
 
 **Source.** `commands` blocks of the legacy descriptors
 
-### S021 — A command alias is claimed by more than one plugin
+### S021 - A command alias is claimed by more than one plugin
 
 `info`
 
@@ -369,7 +409,7 @@ being claimed.
 
 **Source.** `aliases` of each declared command, compared with the declared command names
 
-### S030 — Several plugins ship the same unrelocated library, in different builds
+### S030 - Several plugins ship the same unrelocated library, in different builds
 
 `warning`
 
@@ -379,7 +419,7 @@ being claimed.
 
 **Source.** Foreign package roots of every jar, fingerprinted by their class list
 
-### S031 — The same library is bundled by several plugins
+### S031 - The same library is bundled by several plugins
 
 `info`
 
@@ -389,7 +429,17 @@ being claimed.
 
 **Source.** Foreign package roots shared by more than one jar
 
-### S040 — Java release required by this plugin set
+### S032 - High-risk transitive library shaded unrelocated across plugins
+
+`critical`
+
+**Why it matters.** Unrelocated copies of bStats, Kyori Adventure, HikariCP, Gson, SnakeYAML, SLF4J, Caffeine or Netty across multiple plugins collide on overlapping plugin classloaders, causing LinkageError, ClassCastException, ServiceConfigurationError or bStats relocation-guard crashes at runtime.
+
+**Fix.** Relocate shaded transitive libraries under each plugin's own package, or declare shared Maven coordinates in the descriptor `libraries:` section.
+
+**Source.** Unrelocated high-risk transitive package roots fingerprinted by class ABI across installed jars
+
+### S040 - Java release required by this plugin set
 
 `info`
 
@@ -399,7 +449,7 @@ being claimed.
 
 **Source.** Class file major versions of every class in the directory
 
-### S041 — Plugin loads in legacy mode
+### S041 - Plugin loads in legacy mode
 
 `warning`
 
@@ -409,7 +459,7 @@ being claimed.
 
 **Source.** Missing api-version in the descriptor
 
-### S050 — Soft dependency or load-order target is not installed
+### S050 - Soft dependency or load-order target is not installed
 
 `info`
 
@@ -419,7 +469,7 @@ being claimed.
 
 **Source.** softdepend / loadbefore compared with the plugin set
 
-### S060 — Plugin does not declare Folia support
+### S060 - Plugin does not declare Folia support
 
 `warning`
 
@@ -433,7 +483,7 @@ being claimed.
 
 24 rules.
 
-### P001 — No pack.mcmeta at the pack root
+### P001 - No pack.mcmeta at the pack root
 
 `blocker`
 
@@ -443,7 +493,7 @@ being claimed.
 
 **Source.** Vanilla pack layout: pack.mcmeta sits at the root next to assets/ (verified against the extracted vanilla assets in misode/mcmeta, branch assets)
 
-### P002 — pack.mcmeta is not a usable JSON object
+### P002 - pack.mcmeta is not a usable JSON object
 
 `blocker`
 
@@ -453,7 +503,7 @@ being claimed.
 
 **Source.** SpyglassMC/vanilla-mcdoc java/pack.mcdoc:4-5, `struct Pack { pack: struct PackBase { ... } }`
 
-### P003 — pack.mcmeta declares no format
+### P003 - pack.mcmeta declares no format
 
 `critical`
 
@@ -463,7 +513,7 @@ being claimed.
 
 **Source.** SpyglassMC/vanilla-mcdoc java/pack.mcdoc:12 (`pack_format?`, optional since 1.21.9) and :20 (`min_format?`)
 
-### P010 — Declared format is not the target version's format
+### P010 - Declared format is not the target version's format
 
 `warning`
 
@@ -473,7 +523,7 @@ being claimed.
 
 **Source.** Version-to-format table fetched from https://raw.githubusercontent.com/misode/mcmeta/refs/heads/summary/versions/data.min.json
 
-### P011 — supported_formats used together with a 1.21.9 or later min_format
+### P011 - supported_formats used together with a 1.21.9 or later min_format
 
 `critical`
 
@@ -483,7 +533,7 @@ being claimed.
 
 **Source.** SpyglassMC/vanilla-mcdoc java/pack.mcdoc:13-16, "Must not be specified in case min_format indicates a format version for 1.21.9 and later"
 
-### P012 — Declared format range does not cover the target
+### P012 - Declared format range does not cover the target
 
 `warning`
 
@@ -493,7 +543,7 @@ being claimed.
 
 **Source.** SpyglassMC/vanilla-mcdoc java/pack.mcdoc:16,20,24 for the range fields; target from https://raw.githubusercontent.com/misode/mcmeta/refs/heads/summary/versions/data.min.json
 
-### P013 — A format field holds a value of the wrong shape
+### P013 - A format field holds a value of the wrong shape
 
 `critical`
 
@@ -503,7 +553,7 @@ being claimed.
 
 **Source.** SpyglassMC/vanilla-mcdoc java/pack.mcdoc:69, `type PackFormat = (int | [int] @ 1 | [int, int @ 0..])`; SpyglassMC/vanilla-mcdoc java/pack.mcdoc:16 with java/util/mod.mcdoc:28-35 for the inclusive range
 
-### P014 — Format checks skipped because no target format is known
+### P014 - Format checks skipped because no target format is known
 
 `info`
 
@@ -513,7 +563,7 @@ being claimed.
 
 **Source.** Command options: neither --pack-format nor a resolvable --mc was available
 
-### P020 — Reference points at a file the pack does not contain
+### P020 - Reference points at a file the pack does not contain
 
 `critical`
 
@@ -523,7 +573,7 @@ being claimed.
 
 **Source.** Reference fields from SpyglassMC/vanilla-mcdoc java/assets/model.mcdoc:7,10-15,47 and java/assets/item_definition.mcdoc:61,109. PaperMC/Paper paper-api PlayerResourcePackStatusEvent.Status, eight values, none of which signals a partial load
 
-### P021 — Model parent chain forms a cycle
+### P021 - Model parent chain forms a cycle
 
 `critical`
 
@@ -533,7 +583,7 @@ being claimed.
 
 **Source.** `parent` field, SpyglassMC/vanilla-mcdoc java/assets/model.mcdoc:7. PaperMC/Paper paper-api PlayerResourcePackStatusEvent.Status, eight values, none of which signals a partial load
 
-### P022 — sounds.json names an ogg file the pack does not contain
+### P022 - sounds.json names an ogg file the pack does not contain
 
 `warning`
 
@@ -543,7 +593,7 @@ being claimed.
 
 **Source.** `sounds[].name` with type `file`, SpyglassMC/vanilla-mcdoc java/assets/sounds.mcdoc:8,19,43
 
-### P023 — Font provider names a file the pack does not contain
+### P023 - Font provider names a file the pack does not contain
 
 `warning`
 
@@ -553,7 +603,7 @@ being claimed.
 
 **Source.** Provider fields from SpyglassMC/vanilla-mcdoc java/assets/font.mcdoc:32 (bitmap `file`), :45 (ttf `file`), :61 (unihex `hex_file`) and :86 (reference `id`). All four are bare strings in the schema, so their directories were confirmed against the extracted vanilla pack in misode/mcmeta, branch assets: minecraft:font/nonlatin_european.png is assets/minecraft/textures/font/nonlatin_european.png, and minecraft:font/unifont.zip is assets/minecraft/font/unifont.zip. ttf `file` is documented as relative to /assets/<namespace>/font/ on minecraft.wiki "Font"
 
-### P024 — Atlas source names a texture the pack does not contain
+### P024 - Atlas source names a texture the pack does not contain
 
 `warning`
 
@@ -563,7 +613,7 @@ being claimed.
 
 **Source.** Sprite source fields typed `#[id="texture"]` in SpyglassMC/vanilla-mcdoc java/assets/atlas.mcdoc:28 (single `resource`), :53 (paletted_permutations `textures`), :54 (`palette_key`), :56 (permutation values) and :71 (unstitch `resource`). The `sprite` fields at :31 and :80 are `definition=true`, so they name the sprite being created rather than a file, and are not checked
 
-### P025 — JSON asset does not parse, so its references were not followed
+### P025 - JSON asset does not parse, so its references were not followed
 
 `warning`
 
@@ -573,7 +623,7 @@ being claimed.
 
 **Source.** Strict JSON parse of the file's own bytes, after dropping a UTF-8 byte order mark
 
-### P030 — Item definition has two cases matching the same value
+### P030 - Item definition has two cases matching the same value
 
 `critical`
 
@@ -583,7 +633,7 @@ being claimed.
 
 **Source.** SpyglassMC/vanilla-mcdoc java/assets/item_definition.mcdoc:84-100 (`select` cases, `when: (T | [T])`) and :350-353 for the custom_model_data property
 
-### P031 — Another pack defines the same item definition
+### P031 - Another pack defines the same item definition
 
 `warning`
 
@@ -593,7 +643,7 @@ being claimed.
 
 **Source.** Item definitions are single files per item id, SpyglassMC/vanilla-mcdoc java/assets/item_definition.mcdoc:11
 
-### P032 — custom_model_data index is not a valid index
+### P032 - custom_model_data index is not a valid index
 
 `critical`
 
@@ -603,7 +653,7 @@ being claimed.
 
 **Source.** SpyglassMC/vanilla-mcdoc java/assets/item_definition.mcdoc:352, `index?: int @ 0..`
 
-### P040 — Resource path uses characters the game rejects
+### P040 - Resource path uses characters the game rejects
 
 `warning`
 
@@ -613,7 +663,7 @@ being claimed.
 
 **Source.** minecraft.wiki "Resource location", Java Edition character table; uppercase was disallowed in 16w32a
 
-### P041 — Pack ships files that are not pack content
+### P041 - Pack ships files that are not pack content
 
 `info`
 
@@ -623,7 +673,7 @@ being claimed.
 
 **Source.** Entry list of the pack
 
-### P042 — Model uses the removed custom_model_data override mechanism
+### P042 - Model uses the removed custom_model_data override mechanism
 
 `info`
 
@@ -633,7 +683,7 @@ being claimed.
 
 **Source.** `overrides` is marked #[until="1.21.4"] in SpyglassMC/vanilla-mcdoc java/assets/model.mcdoc:24-30; the replacement is item_definition.mcdoc:350-353
 
-### P050 — Overlay can never apply
+### P050 - Overlay can never apply
 
 `warning`
 
@@ -643,7 +693,7 @@ being claimed.
 
 **Source.** SpyglassMC/vanilla-mcdoc java/pack.mcdoc:58-67, `directory: string @ 1..` with `formats`, `min_format` and `max_format`
 
-### P060 — Atlas texture dimensions are not a power of two
+### P060 - Atlas texture dimensions are not a power of two
 
 `info`
 
@@ -653,7 +703,7 @@ being claimed.
 
 **Source.** Dimensions read from the PNG IHDR chunk of each file
 
-### P061 — File named .png is not a PNG
+### P061 - File named .png is not a PNG
 
 `critical`
 
@@ -663,7 +713,7 @@ being claimed.
 
 **Source.** First eight bytes compared against the PNG signature, RFC 2083 section 3.1
 
-### P062 — Animated texture is not a whole number of frames tall
+### P062 - Animated texture is not a whole number of frames tall
 
 `warning`
 

@@ -38,7 +38,7 @@ data class CompatOptions(
  * Answers one question: if this jar is dropped onto a server whose API is the given surface, what
  * breaks?
  *
- * The jar's own classes — including anything shaded into it — are treated as present, so only real
+ * The jar's own classes: including anything shaded into it: are treated as present, so only real
  * external references are examined.
  */
 class CompatChecker(private val options: CompatOptions = CompatOptions()) {

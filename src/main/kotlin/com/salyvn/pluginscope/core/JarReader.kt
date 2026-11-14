@@ -13,7 +13,7 @@ import java.util.zip.ZipFile
  * Reads a jar in one pass: class metadata, resources, descriptors, manifest, and optionally every
  * reference the code makes to a chosen set of owners.
  *
- * Nothing is loaded into the JVM and no plugin code runs, which is the point — these jars are
+ * Nothing is loaded into the JVM and no plugin code runs, which is the point: these jars are
  * routinely third-party binaries a server owner has not built themselves.
  */
 object JarReader {

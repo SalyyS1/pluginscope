@@ -55,25 +55,49 @@ object SarifReporter {
     }
 
     private fun run(report: ScanReport) = buildJsonObject {
-        val rules = report.findings
+        val uniqueFindings = report.findings
             .distinctBy { it.ruleId }
             .sortedBy { it.ruleId }
-            .map { finding ->
-                buildJsonObject {
-                    put("id", finding.ruleId)
-                    put("name", finding.ruleId)
-                    putJsonObject("shortDescription") { put("text", finding.title) }
-                    putJsonObject("fullDescription") {
+        val ruleIndexById = uniqueFindings.mapIndexed { idx, f -> f.ruleId to idx }.toMap()
+        val rules = uniqueFindings.map { finding ->
+            buildJsonObject {
+                put("id", finding.ruleId)
+                put("name", pascalCase(finding.title, finding.ruleId))
+                putJsonObject("shortDescription") { put("text", finding.title) }
+                putJsonObject("fullDescription") {
+                    put(
+                        "text",
+                        listOfNotNull(finding.title, finding.provenance?.let { "Source: $it" })
+                            .joinToString(" "),
+                    )
+                }
+                putJsonObject("defaultConfiguration") { put("level", level(finding.severity)) }
+                finding.fix?.let { fixText ->
+                    putJsonObject("help") {
+                        put("text", fixText)
                         put(
-                            "text",
-                            listOfNotNull(finding.title, finding.provenance?.let { "Source: $it" })
-                                .joinToString(" "),
+                            "markdown",
+                            buildString {
+                                append("**").append(finding.ruleId).append(": ").append(finding.title).append("**\n\n")
+                                append("Remediation: ").append(fixText)
+                                finding.provenance?.let { append("\n\nSource: ").append(it) }
+                            },
                         )
                     }
-                    putJsonObject("defaultConfiguration") { put("level", level(finding.severity)) }
-                    finding.fix?.let { putJsonObject("help") { put("text", it) } }
+                }
+                putJsonObject("properties") {
+                    put("precision", "high")
+                    putJsonArray("tags") {
+                        add("minecraft")
+                        add("paper")
+                        add("classloader")
+                        add("shading")
+                    }
                 }
             }
+        }
+
+        val normalizedSubjectUri = normalizeUri(report.subject)
 
         putJsonObject("tool") {
             putJsonObject("driver") {
@@ -88,16 +112,24 @@ object SarifReporter {
                 add(
                     buildJsonObject {
                         put("ruleId", finding.ruleId)
+                        ruleIndexById[finding.ruleId]?.let { put("ruleIndex", it) }
                         put("level", level(finding.severity))
                         putJsonObject("message") {
-                            put("text", (listOf(finding.detail) + finding.evidence).joinToString(" | "))
+                            put(
+                                "text",
+                                (listOf("[${finding.location}] ${finding.detail}") + finding.evidence).joinToString(" | "),
+                            )
                         }
                         putJsonArray("locations") {
                             add(
                                 buildJsonObject {
                                     putJsonObject("physicalLocation") {
                                         putJsonObject("artifactLocation") {
-                                            put("uri", report.subject.replace('\\', '/'))
+                                            put("uri", normalizedSubjectUri)
+                                            put("uriBaseId", "%SRCROOT%")
+                                        }
+                                        putJsonObject("region") {
+                                            put("startLine", extractLine(finding.location))
                                         }
                                     }
                                     putJsonObject("message") { put("text", finding.location) }
@@ -110,6 +142,32 @@ object SarifReporter {
                     }
                 )
             }
+        }
+    }
+
+    private fun normalizeUri(subject: String): String {
+        val cwd = runCatching { java.nio.file.Path.of("").toAbsolutePath().normalize() }.getOrNull()
+        val path = runCatching { java.nio.file.Path.of(subject).toAbsolutePath().normalize() }.getOrNull()
+        if (cwd != null && path != null && path.startsWith(cwd) && path != cwd) {
+            return cwd.relativize(path).toString().replace('\\', '/')
+        }
+        val forward = subject.replace('\\', '/')
+            .replace(Regex("^[A-Za-z]:/"), "")
+            .trimStart('/')
+        return forward.ifEmpty { "plugins" }
+    }
+
+    private fun extractLine(location: String): Int {
+        val tail = location.substringAfterLast(':', "")
+        val parsed = tail.toIntOrNull()
+        return if (parsed != null && parsed >= 1) parsed else 1
+    }
+
+    private fun pascalCase(title: String, fallback: String): String {
+        val words = title.split(Regex("[^A-Za-z0-9]+")).filter { it.isNotEmpty() }
+        if (words.isEmpty()) return fallback
+        return words.joinToString("") { word ->
+            word.lowercase().replaceFirstChar { it.uppercaseChar() }
         }
     }
 

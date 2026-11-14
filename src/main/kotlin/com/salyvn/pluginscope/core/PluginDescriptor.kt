@@ -20,6 +20,8 @@ data class DependencyRef(
     /** `BEFORE` / `AFTER` for paper-plugin.yml; null when the format does not express it. */
     val load: String? = null,
     val joinClasspath: Boolean? = null,
+    /** `server` or `bootstrap` for paper-plugin.yml; null for legacy plugin.yml. */
+    val phase: String? = null,
 )
 
 /**
@@ -194,8 +196,12 @@ object DescriptorParser {
         val block = map["dependencies"] as? Map<Any?, Any?> ?: return emptyList()
         val out = mutableListOf<DependencyRef>()
         for ((phase, entries) in block) {
+            val phaseName = phase.toString()
+            if (phaseName != "bootstrap" && phaseName != "server") {
+                errors += "dependencies.$phaseName is not a valid paper-plugin.yml phase (expected bootstrap or server)"
+            }
             val byName = entries as? Map<Any?, Any?> ?: run {
-                errors += "dependencies.$phase should be a mapping of plugin name to options"
+                errors += "dependencies.$phaseName should be a mapping of plugin name to options"
                 continue
             }
             for ((depName, opts) in byName) {
@@ -206,6 +212,7 @@ object DescriptorParser {
                     required = options["required"] as? Boolean ?: true,
                     load = options["load"]?.toString(),
                     joinClasspath = options["join-classpath"] as? Boolean,
+                    phase = phaseName,
                 )
             }
         }

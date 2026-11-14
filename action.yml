@@ -1,0 +1,156 @@
+name: 'PluginScope Audit'
+description: 'Static packaging, classloader isolation, transitive shading collision, API compatibility, and resource pack audit for Minecraft plugins'
+author: 'SalyVn'
+
+branding:
+  icon: 'layers'
+  color: 'blue'
+
+inputs:
+  command:
+    description: 'Subcommand to run: jar, stack, compat, or pack'
+    required: false
+    default: 'jar'
+  path:
+    description: 'Path to a plugin JAR, a plugins/ directory, or a resource pack'
+    required: false
+    default: 'build/libs'
+  target:
+    description: 'Target Minecraft version (--target for jar, --mc for compat and pack), e.g. 1.21.4 or 26.2'
+    required: false
+    default: ''
+  folia:
+    description: 'Pass --folia when running the stack command'
+    required: false
+    default: 'false'
+  fail-on:
+    description: 'Minimum severity that exits non-zero (blocker, critical, warning, info, never)'
+    required: false
+    default: 'critical'
+  sarif-file:
+    description: 'Optional output path for OASIS SARIF v2.1.0 report (upload with github/codeql-action/upload-sarif)'
+    required: false
+    default: ''
+  version:
+    description: 'PluginScope release version to download (without leading v)'
+    required: false
+    default: '0.2.0'
+  jar-path:
+    description: 'Optional path to a pre-built pluginscope JAR instead of downloading from GitHub Releases'
+    required: false
+    default: ''
+  args:
+    description: 'Additional CLI arguments appended to the command'
+    required: false
+    default: ''
+
+outputs:
+  exit-code:
+    description: 'Exit code returned by pluginscope'
+    value: ${{ steps.audit.outputs.exit-code }}
+  sarif-file:
+    description: 'Path to generated SARIF 2.1.0 report if sarif-file was configured'
+    value: ${{ steps.audit.outputs.sarif-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Verify Java 21+ runtime
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v java >/dev/null 2>&1; then
+          echo "::error::Java 21+ is required to run PluginScope. Add actions/setup-java@v4 with java-version: '21'."
+          exit 1
+        fi
+        JAVA_MAJOR=$(java -version 2>&1 | head -n 1 | sed -E 's/.*"([0-9]+).*/\1/')
+        if [ "${JAVA_MAJOR:-0}" -lt 21 ]; then
+          echo "::error::PluginScope requires Java 21 or newer (found Java ${JAVA_MAJOR})."
+          exit 1
+        fi
+
+    - name: Resolve PluginScope CLI JAR
+      id: resolve
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_JAR_PATH: ${{ inputs.jar-path }}
+      run: |
+        set -euo pipefail
+        if [ -n "$INPUT_JAR_PATH" ]; then
+          if [ ! -f "$INPUT_JAR_PATH" ]; then
+            echo "::error::Specified jar-path does not exist: $INPUT_JAR_PATH"
+            exit 1
+          fi
+          echo "cli-jar=$INPUT_JAR_PATH" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        CACHE_DIR="${RUNNER_TEMP:-/tmp}/pluginscope-${INPUT_VERSION}"
+        mkdir -p "$CACHE_DIR"
+        CLI_JAR="${CACHE_DIR}/pluginscope-${INPUT_VERSION}.jar"
+        if [ ! -f "$CLI_JAR" ]; then
+          URL="https://github.com/SalyyS1/pluginscope/releases/download/v${INPUT_VERSION}/pluginscope-${INPUT_VERSION}.jar"
+          curl -fsSL --retry 3 -o "$CLI_JAR" "$URL"
+        fi
+        echo "cli-jar=$CLI_JAR" >> "$GITHUB_OUTPUT"
+
+    - name: Run PluginScope static audit
+      id: audit
+      shell: bash
+      env:
+        CLI_JAR: ${{ steps.resolve.outputs.cli-jar }}
+        INPUT_COMMAND: ${{ inputs.command }}
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_TARGET: ${{ inputs.target }}
+        INPUT_FOLIA: ${{ inputs.folia }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_SARIF_FILE: ${{ inputs.sarif-file }}
+        INPUT_ARGS: ${{ inputs.args }}
+      run: |
+        set -uo pipefail
+        CMD_ARGS=("$INPUT_COMMAND" "$INPUT_PATH" "--no-color" "--fail-on" "$INPUT_FAIL_ON")
+
+        if [ -n "$INPUT_TARGET" ]; then
+          if [ "$INPUT_COMMAND" = "jar" ]; then
+            CMD_ARGS+=("--target" "$INPUT_TARGET")
+          elif [ "$INPUT_COMMAND" = "compat" ] || [ "$INPUT_COMMAND" = "pack" ]; then
+            CMD_ARGS+=("--mc" "$INPUT_TARGET")
+          fi
+        fi
+
+        if [ "$INPUT_COMMAND" = "stack" ] && [ "$INPUT_FOLIA" = "true" ]; then
+          CMD_ARGS+=("--folia")
+        fi
+
+        if [ -n "$INPUT_SARIF_FILE" ]; then
+          CMD_ARGS+=("--sarif" "$INPUT_SARIF_FILE")
+        fi
+
+        if [ -n "$INPUT_ARGS" ]; then
+          # shellcheck disable=SC2206
+          EXTRA=($INPUT_ARGS)
+          CMD_ARGS+=("${EXTRA[@]}")
+        fi
+
+        REPORT_TXT="${RUNNER_TEMP:-/tmp}/pluginscope-console.txt"
+        java -jar "$CLI_JAR" "${CMD_ARGS[@]}" | tee "$REPORT_TXT"
+        EXIT_CODE=${PIPESTATUS[0]}
+
+        echo "exit-code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        if [ -n "$INPUT_SARIF_FILE" ] && [ -f "$INPUT_SARIF_FILE" ]; then
+          echo "sarif-file=$INPUT_SARIF_FILE" >> "$GITHUB_OUTPUT"
+        else
+          echo "sarif-file=" >> "$GITHUB_OUTPUT"
+        fi
+
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          {
+            echo "### PluginScope Audit (\`pluginscope ${INPUT_COMMAND}\`)"
+            echo ""
+            echo '```text'
+            cat "$REPORT_TXT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        exit "$EXIT_CODE"

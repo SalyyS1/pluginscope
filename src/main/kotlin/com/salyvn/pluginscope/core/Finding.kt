@@ -26,8 +26,8 @@ enum class Severity(val label: String, val rank: Int) {
 }
 
 /**
- * A rule states one checkable fact. [provenance] records where that fact was established from —
- * a POM, a source file, an official doc page — so every claim the tool prints can be audited
+ * A rule states one checkable fact. [provenance] records where that fact was established from -
+ * a POM, a source file, an official doc page: so every claim the tool prints can be audited
  * instead of taken on trust.
  */
 data class Rule(
@@ -49,7 +49,7 @@ data class Finding(
     val location: String,
     /** What was actually observed, in the reader's terms. */
     val detail: String,
-    /** Raw observations backing [detail] — class names, versions, counts. */
+    /** Raw observations backing [detail]: class names, versions, counts. */
     val evidence: List<String> = emptyList(),
     val fix: String? = null,
     val provenance: String? = null,

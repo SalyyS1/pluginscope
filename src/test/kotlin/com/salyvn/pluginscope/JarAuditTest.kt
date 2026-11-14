@@ -150,4 +150,85 @@ class JarAuditTest {
         assertEquals("plugin.yml", facts["descriptor"])
         assertTrue(facts.getValue("needs java").toInt() >= 8) { facts.toString() }
     }
+
+    @Test
+    fun `unrelocated bStats Metrics is reported as J024 even for a single class`() {
+        val jar = FixtureJars.pluginJar(
+            jarName = "unrelocated-bstats",
+            descriptor = FixtureJars.descriptor("StatsPlugin", "fixtures.clean.CleanPlugin", "26.2"),
+            packagePaths = listOf("fixtures/clean/"),
+            generatedClasses = listOf("org/bstats/bukkit/Metrics"),
+        )
+        val report = audit(jar)
+        val hit = report.findings.first { it.ruleId == "J024" }
+        assertEquals(Severity.CRITICAL, hit.severity)
+        assertEquals("org.bstats", hit.location)
+        assertTrue(report.findings.none { it.ruleId == "J022" && it.location.startsWith("org.bstats") })
+    }
+
+    @Test
+    fun `dual descriptors report dependencies omitted from paper-plugin yml as J042`() {
+        val legacyYml = FixtureJars.descriptor(
+            "DualPlugin",
+            "fixtures.clean.CleanPlugin",
+            "26.2",
+            extraLines = listOf("depend: [Vault]", "softdepend: [PlaceholderAPI]"),
+        )
+        val paperYml = FixtureJars.descriptor("DualPlugin", "fixtures.clean.CleanPlugin", "26.2")
+        val jar = FixtureJars.pluginJar(
+            jarName = "dual-drift",
+            descriptor = legacyYml,
+            packagePaths = listOf("fixtures/clean/"),
+            extraEntries = mapOf("paper-plugin.yml" to paperYml.toByteArray()),
+        )
+        val report = audit(jar)
+        val drift = report.findings.first { it.ruleId == "J042" }
+        assertEquals(Severity.CRITICAL, drift.severity)
+        assertTrue(drift.detail.contains("Vault") && drift.detail.contains("PlaceholderAPI")) { drift.detail }
+    }
+
+    @Test
+    fun `paper-plugin yml with missing bootstrapper class blocks as J042`() {
+        val paperYml = FixtureJars.descriptor(
+            "BrokenBoot",
+            "fixtures.clean.CleanPlugin",
+            "26.2",
+            extraLines = listOf("bootstrapper: com.example.absent.PluginBoot"),
+        )
+        val jar = FixtureJars.pluginJar(
+            jarName = "missing-bootstrapper",
+            descriptor = paperYml,
+            descriptorEntry = "paper-plugin.yml",
+            packagePaths = listOf("fixtures/clean/"),
+        )
+        val report = audit(jar)
+        val hit = report.findings.first { it.ruleId == "J042" }
+        assertEquals(Severity.BLOCKER, hit.severity)
+        assertTrue(hit.detail.contains("PluginBoot")) { hit.detail }
+    }
+
+    @Test
+    fun `paper-plugin yml declaring a dependency only under bootstrap warns as J042`() {
+        val paperYml = FixtureJars.descriptor(
+            "BootstrapOnly",
+            "fixtures.clean.CleanPlugin",
+            "26.2",
+            extraLines = listOf(
+                "dependencies:",
+                "  bootstrap:",
+                "    Vault:",
+                "      required: true",
+            ),
+        )
+        val jar = FixtureJars.pluginJar(
+            jarName = "bootstrap-only-dep",
+            descriptor = paperYml,
+            descriptorEntry = "paper-plugin.yml",
+            packagePaths = listOf("fixtures/clean/"),
+        )
+        val report = audit(jar)
+        val hit = report.findings.first { it.ruleId == "J042" }
+        assertEquals(Severity.WARNING, hit.severity)
+        assertTrue(hit.detail.contains("Vault")) { hit.detail }
+    }
 }

@@ -20,8 +20,8 @@ interface McpTool {
 }
 
 /**
- * The outcome of a tool call. [isError] carries a failed *execution* — a missing file, an
- * unreadable jar — back to the model as content it can act on, which is what the specification
+ * The outcome of a tool call. [isError] carries a failed *execution*: a missing file, an
+ * unreadable jar: back to the model as content it can act on, which is what the specification
  * asks for. Protocol-level problems (unknown tool, bad request shape) are JSON-RPC errors instead
  * and never reach here.
  */

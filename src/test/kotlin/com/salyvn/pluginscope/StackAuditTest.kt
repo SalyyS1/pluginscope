@@ -165,4 +165,160 @@ class StackAuditTest {
         assertEquals("1", facts["plugins"])
         assertTrue(facts.keys.any { it.trim() == "Core" }) { facts.keys.toString() }
     }
+
+    @Test
+    fun `high-risk transitive shading collisions report S032 critical`(@TempDir directory: Path) {
+        install(
+            directory,
+            plugin(
+                "ShopA",
+                generatedClasses = listOf(
+                    "org/bstats/bukkit/Metrics",
+                    "com/zaxxer/hikari/HikariConfig",
+                    "com/zaxxer/hikari/HikariDataSource",
+                    "net/kyori/adventure/text/Component",
+                    "net/kyori/adventure/text/TextComponent",
+                ),
+            ),
+            plugin(
+                "ShopB",
+                generatedClasses = listOf(
+                    "org/bstats/bukkit/Metrics",
+                    "com/zaxxer/hikari/HikariConfig",
+                    "com/zaxxer/hikari/HikariDataSource",
+                    "com/zaxxer/hikari/pool/HikariPool",
+                    "net/kyori/adventure/text/Component",
+                    "net/kyori/adventure/text/TextComponent",
+                ),
+            ),
+        )
+        val report = audit(directory)
+        val collisions = report.findings.filter { it.ruleId == "S032" }
+        val locations = collisions.map { it.location }.toSet()
+        assertEquals(setOf("org.bstats", "com.zaxxer.hikari", "net.kyori"), locations)
+        assertTrue(collisions.all { it.severity == Severity.CRITICAL })
+    }
+
+    @Test
+    fun `method ABI skew with identical class names is detected as S030`(@TempDir directory: Path) {
+        val baseClasses = (1..4).map { "org/apache/commons/lang3/StringUtils$it" }
+        val jarA = FixtureJars.pluginJar(
+            jarName = "AbiA",
+            descriptor = FixtureJars.descriptor("AbiA", "com.example.abia.Main", "26.2"),
+            generatedClasses = listOf("com/example/abia/Main") + baseClasses.drop(1),
+            extraEntries = mapOf(
+                "${baseClasses.first()}.class" to FixtureJars.emptyClass(baseClasses.first(), 65, extraMethodName = "v1Only"),
+            ),
+        )
+        val jarB = FixtureJars.pluginJar(
+            jarName = "AbiB",
+            descriptor = FixtureJars.descriptor("AbiB", "com.example.abib.Main", "26.2"),
+            generatedClasses = listOf("com/example/abib/Main") + baseClasses.drop(1),
+            extraEntries = mapOf(
+                "${baseClasses.first()}.class" to FixtureJars.emptyClass(baseClasses.first(), 65, extraMethodName = "v2Only"),
+            ),
+        )
+        install(directory, jarA, jarB)
+        val report = audit(directory)
+        assertTrue(report.findings.any { it.ruleId == "S030" && it.location == "org.apache.commons" })
+    }
+
+    @Test
+    fun `paper plugin referencing another plugin in bytecode without declaring dependency reports S003 critical`(@TempDir directory: Path) {
+        val economyJar = FixtureJars.pluginJar(
+            jarName = "EconomyApi",
+            descriptor = FixtureJars.descriptor("EconomyApi", "com.example.econ.EconomyPlugin", "26.2"),
+            descriptorEntry = "paper-plugin.yml",
+            generatedClasses = listOf("com/example/econ/EconomyPlugin"),
+            extraEntries = mapOf(
+                "com/example/econ/BankService.class" to FixtureJars.emptyClass(
+                    "com/example/econ/BankService",
+                    65,
+                    extraMethodName = "deposit",
+                ),
+            ),
+        )
+        val consumerJar = FixtureJars.pluginJar(
+            jarName = "ShopConsumer",
+            descriptor = FixtureJars.descriptor("ShopConsumer", "com.example.shop.ShopPlugin", "26.2"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf(
+                "com/example/shop/ShopPlugin.class" to FixtureJars.emptyClass(
+                    "com/example/shop/ShopPlugin",
+                    65,
+                    callOwner = "com/example/econ/BankService",
+                    callMethod = "deposit",
+                ),
+            ),
+        )
+        install(directory, economyJar, consumerJar)
+        val report = audit(directory)
+        val hit = report.findings.first { it.ruleId == "S003" }
+        assertEquals(Severity.CRITICAL, hit.severity)
+        assertEquals("ShopConsumer -> EconomyApi", hit.location)
+        assertTrue(hit.evidence.any { it.contains("BankService#deposit") }) { hit.evidence.toString() }
+    }
+
+    @Test
+    fun `paper isolated classloader blocks join-classpath false and closed classloader access as S004`(@TempDir directory: Path) {
+        val corePaperDesc = FixtureJars.descriptor(
+            "ClosedCore",
+            "com.example.closed.CoreMain",
+            "26.2",
+            extraLines = listOf("has-open-classloader: false"),
+        )
+        val closedCoreJar = FixtureJars.pluginJar(
+            jarName = "ClosedCore",
+            descriptor = corePaperDesc,
+            descriptorEntry = "paper-plugin.yml",
+            generatedClasses = listOf("com/example/closed/CoreMain"),
+            extraEntries = mapOf(
+                "com/example/closed/CoreApi.class" to FixtureJars.emptyClass(
+                    "com/example/closed/CoreApi",
+                    65,
+                    extraMethodName = "ping",
+                ),
+            ),
+        )
+        val paperCallerDesc = FixtureJars.descriptor(
+            "IsolatedCaller",
+            "com.example.caller.CallerMain",
+            "26.2",
+            extraLines = listOf(
+                "dependencies:",
+                "  server:",
+                "    ClosedCore:",
+                "      required: true",
+                "      join-classpath: false",
+            ),
+        )
+        val paperCallerJar = FixtureJars.pluginJar(
+            jarName = "IsolatedCaller",
+            descriptor = paperCallerDesc,
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf(
+                "com/example/caller/CallerMain.class" to FixtureJars.emptyClass(
+                    "com/example/caller/CallerMain",
+                    65,
+                    callOwner = "com/example/closed/CoreApi",
+                    callMethod = "ping",
+                ),
+            ),
+        )
+        val legacyCallerJar = FixtureJars.pluginJar(
+            jarName = "LegacyCaller",
+            descriptor = FixtureJars.descriptor(
+                "LegacyCaller",
+                "com.example.legacy.LegacyMain",
+                "26.2",
+                extraLines = listOf("depend: [ClosedCore]"),
+            ),
+            descriptorEntry = "plugin.yml",
+            generatedClasses = listOf("com/example/legacy/LegacyMain"),
+        )
+        install(directory, closedCoreJar, paperCallerJar, legacyCallerJar)
+        val report = audit(directory)
+        val blocked = report.findings.filter { it.ruleId == "S004" }.map { it.location }.toSet()
+        assertEquals(setOf("IsolatedCaller -> ClosedCore", "LegacyCaller -> ClosedCore"), blocked)
+    }
 }

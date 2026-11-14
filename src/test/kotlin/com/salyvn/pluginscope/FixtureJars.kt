@@ -159,16 +159,36 @@ object FixtureJars {
         extraLines.forEach { appendLine(it) }
     }
 
-    fun emptyClass(internalName: String, majorVersion: Int): ByteArray {
+    fun emptyClass(
+        internalName: String,
+        majorVersion: Int,
+        extraMethodName: String? = null,
+        callOwner: String? = null,
+        callMethod: String = "apiCall",
+    ): ByteArray {
         val writer = ClassWriter(0)
         writer.visit(majorVersion, Opcodes.ACC_PUBLIC, internalName, null, "java/lang/Object", null)
         writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
             visitCode()
             visitVarInsn(Opcodes.ALOAD, 0)
             visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+            if (callOwner != null) {
+                val label = org.objectweb.asm.Label()
+                visitLabel(label)
+                visitLineNumber(42, label)
+                visitMethodInsn(Opcodes.INVOKESTATIC, callOwner, callMethod, "()V", false)
+            }
             visitInsn(Opcodes.RETURN)
             visitMaxs(1, 1)
             visitEnd()
+        }
+        if (extraMethodName != null) {
+            writer.visitMethod(Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC, extraMethodName, "()V", null, null).apply {
+                visitCode()
+                visitInsn(Opcodes.RETURN)
+                visitMaxs(0, 0)
+                visitEnd()
+            }
         }
         writer.visitEnd()
         return writer.toByteArray()

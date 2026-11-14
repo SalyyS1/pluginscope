@@ -31,6 +31,8 @@ object ServerRuntime {
      */
     val provided: List<ProvidedLibrary> = listOf(
         ProvidedLibrary("net/kyori/adventure", "net.kyori:adventure-api (+ serializers, minimessage)", "5.2.0", PAPER_API_POM),
+        ProvidedLibrary("net/kyori/examination", "net.kyori:examination-api (via adventure-api)", "1.3.0", "adventure-api 5.2.0 POM, compile scope"),
+        ProvidedLibrary("net/kyori/option", "net.kyori:option (via adventure-api)", "1.1.0", "adventure-api 5.2.0 POM, compile scope"),
         ProvidedLibrary("com/google/common", "com.google.guava:guava", "33.6.0-jre", PAPER_API_POM),
         ProvidedLibrary("com/google/gson", "com.google.code.gson:gson", "2.14.0", PAPER_API_POM),
         ProvidedLibrary("org/yaml/snakeyaml", "org.yaml:snakeyaml", "2.2", PAPER_API_POM),
@@ -44,6 +46,22 @@ object ServerRuntime {
         ProvidedLibrary("org/checkerframework", "org.checkerframework:checker-qual", "3.49.2", PAPER_API_POM),
         ProvidedLibrary("org/jetbrains/annotations", "org.jetbrains:annotations (via adventure-api)", "-", "adventure-api 5.2.0 POM, compile scope"),
         ProvidedLibrary("org/eclipse/aether", "org.apache.maven:maven-resolver-provider", "3.9.6", PAPER_API_POM),
+    )
+
+    /**
+     * Transitive library roots known to cause runtime LinkageError, ClassCastException,
+     * ServiceConfigurationError or static relocation-guard crashes when shaded unrelocated
+     * across multiple plugins on overlapping classloaders.
+     */
+    val highRiskTransitiveRoots: Map<String, String> = linkedMapOf(
+        "org/bstats" to "bStats Metrics enforces relocation at startup and collides on shared classloaders",
+        "net/kyori" to "Kyori Adventure types cross the Paper API boundary; unrelocated copies trigger LinkageError",
+        "com/zaxxer/hikari" to "HikariCP pool, MBean and SLF4J bindings collide across shared plugin classloaders",
+        "com/google/gson" to "Google Gson is provided by Paper; unrelocated copies clash across plugin API calls",
+        "org/yaml/snakeyaml" to "SnakeYAML 1.x vs 2.x Constructor and LoaderOptions ABIs break when shaded unrelocated",
+        "org/slf4j" to "SLF4J logger bindings split or throw LinkageError when shaded unrelocated",
+        "com/github/benmanes/caffeine" to "Caffeine cache node classes clash across overlapping plugin classloaders",
+        "io/netty" to "Netty channel and ByteBuf types collide with the server network stack when shaded unrelocated",
     )
 
     /**
@@ -75,4 +93,12 @@ object ServerRuntime {
 
     fun isKotlinRuntime(internalName: String): Boolean =
         kotlinRuntimeRoots.any { internalName == it || internalName.startsWith("$it/") }
+
+    fun isBstats(internalName: String): Boolean =
+        internalName == "org/bstats" || internalName.startsWith("org/bstats/")
+
+    fun highRiskRootFor(internalName: String): Pair<String, String>? =
+        highRiskTransitiveRoots.entries
+            .firstOrNull { (root, _) -> internalName == root || internalName.startsWith("$root/") }
+            ?.toPair()
 }
