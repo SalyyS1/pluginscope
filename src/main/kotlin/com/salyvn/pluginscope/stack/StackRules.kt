@@ -49,6 +49,46 @@ object StackRules {
             "has-open-classloader: true on the target Paper plugin.",
     )
 
+    val PAPER_BOOTSTRAP_TARGETS_LEGACY_PLUGIN = Rule(
+        id = "S005",
+        severity = Severity.BLOCKER,
+        title = "Paper bootstrap dependency targets a legacy plugin.yml plugin",
+        rationale = "Paper's bootstrap phase only registers paper-plugin.yml providers inside its " +
+            "BootstrapProviderStorage. Legacy plugin.yml plugins have no bootstrapper and do not exist " +
+            "during bootstrap dependency resolution. A required bootstrap dependency on a legacy plugin " +
+            "aborts loading even when the legacy jar is installed in plugins/, while an optional one is " +
+            "never satisfied.",
+        provenance = "PaperMC/Paper PaperPluginEntrypointHandler and SimpleProviderStorage bootstrap resolution",
+        fix = "Move the dependency from dependencies.bootstrap to dependencies.server in paper-plugin.yml, " +
+            "or migrate the target plugin to paper-plugin.yml with a PluginBootstrap entrypoint.",
+    )
+
+    val MULTI_LOADER_LOAD_ORDER_CONFLICT = Rule(
+        id = "S006",
+        severity = Severity.CRITICAL,
+        title = "Multi-loader bootstrap or server load-order cycle or stage inversion",
+        rationale = "Paper constructs directed topological load-order graphs across dependencies.bootstrap " +
+            "(BEFORE and AFTER) and dependencies.server alongside legacy plugin.yml depend, softdepend, and " +
+            "loadbefore edges (including provides aliases). Cycles across BEFORE/AFTER/loadbefore edges or " +
+            "STARTUP plugins requiring POSTWORLD plugins to load BEFORE them break deterministic initialization.",
+        provenance = "PaperMC/Paper MetaDependencyTree topological ordering and PluginLoadOrder STARTUP/POSTWORLD stages",
+        fix = "Flip one conflicting load: BEFORE/AFTER or loadbefore edge (or use load: OMIT), and ensure " +
+            "STARTUP plugins only depend on other STARTUP plugins.",
+    )
+
+    val TRANSITIVE_API_CLASSLOADER_EXPOSURE = Rule(
+        id = "S007",
+        severity = Severity.CRITICAL,
+        title = "Cross-plugin call signature exposes an isolated third plugin's types",
+        rationale = "PaperPluginClassLoader classpath groups are non-transitive: joining Plugin B's classpath " +
+            "does not expose classes from Plugin C unless Plugin A also declares Plugin C under " +
+            "dependencies.server with join-classpath: true. Invoking a method, field, or subtype on Plugin B " +
+            "whose signature references Plugin C's classes fails with NoClassDefFoundError or LinkageError.",
+        provenance = "PaperMC/Paper SimplePluginClassLoaderGroup non-transitive classloader visibility",
+        fix = "Declare the third plugin under dependencies.server with join-classpath: true in the caller's " +
+            "paper-plugin.yml, or decouple the intermediate API signature from foreign plugin types.",
+    )
+
     val DUPLICATE_PLUGIN_NAME = Rule(
         id = "S010",
         severity = Severity.CRITICAL,
@@ -197,12 +237,28 @@ object StackRules {
         fix = "Only relevant if the server runs Folia. Check for a Folia build of the plugin.",
     )
 
+    val CROSS_PLUGIN_DATAFLOW_LEAK = Rule(
+        id = "S070",
+        severity = Severity.CRITICAL,
+        title = "Cross-plugin ASM dataflow retains foreign plugin callbacks or instances across disable",
+        rationale = "When Plugin A passes an instance of its own classes or lambdas into a static registry " +
+            "method in Plugin B without invoking Plugin B's unregister/remove cleanup in onDisable, or when " +
+            "Plugin A stores instances of Plugin B's classes inside a static field or collection without " +
+            "clearing on onDisable or PluginDisableEvent, one plugin's static GC root pins the other plugin's " +
+            "PaperPluginClassLoader in heap across plugin disable or reload.",
+        provenance = "Inter-plugin ASM operand-stack dataflow across static fields, collections, and onDisable call graphs",
+        fix = "Invoke the target plugin's unregister/remove API inside onDisable(), and clear static fields " +
+            "or collections holding foreign plugin instances in onDisable() and PluginDisableEvent.",
+    )
+
     val all = listOf(
         MISSING_HARD_DEPENDENCY, DEPENDENCY_CYCLE, UNDECLARED_PLUGIN_DEPENDENCY,
-        ISOLATED_CLASSLOADER_BLOCKED, DUPLICATE_PLUGIN_NAME, DUPLICATE_MAIN_CLASS,
+        ISOLATED_CLASSLOADER_BLOCKED, PAPER_BOOTSTRAP_TARGETS_LEGACY_PLUGIN,
+        MULTI_LOADER_LOAD_ORDER_CONFLICT, TRANSITIVE_API_CLASSLOADER_EXPOSURE,
+        DUPLICATE_PLUGIN_NAME, DUPLICATE_MAIN_CLASS,
         NAME_SHADOWED_BY_PROVIDES, COMMAND_COLLISION, ALIAS_COLLISION, SHARED_LIBRARY_SKEW,
         SHARED_LIBRARY_DUPLICATED, TRANSITIVE_SHADING_COLLISION, SERVICE_PROVIDER_SHADING_CONFLICT,
         EVENT_HANDLER_SHADING_CONFLICT, JAVA_REQUIREMENT,
-        LEGACY_PLUGIN_PRESENT, MISSING_SOFT_DEPENDENCY, FOLIA_MIX,
+        LEGACY_PLUGIN_PRESENT, MISSING_SOFT_DEPENDENCY, FOLIA_MIX, CROSS_PLUGIN_DATAFLOW_LEAK,
     )
 }

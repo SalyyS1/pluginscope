@@ -347,7 +347,7 @@
     </div>
     <div class="nav-links">
       <a class="pill-link" href="https://github.com/SalyyS1/pluginscope">GitHub Repository</a>
-      <a class="pill-link" href="https://github.com/SalyyS1/pluginscope/releases/latest">Download CLI v0.4.0</a>
+      <a class="pill-link" href="https://github.com/SalyyS1/pluginscope/releases/latest">Download CLI v0.5.0</a>
       <a class="pill-link" href="https://salyys1.github.io/foliascan/">FoliaScan</a>
       <a class="pill-link" href="https://salyys1.github.io/serverdoctor/">ServerDoctor</a>
     </div>
@@ -366,7 +366,8 @@
         <p>Synthesizes valid `.jar` archives with JVM `.class` constant pools in memory and runs the binary inspector.</p>
       </div>
       <div class="btn-row">
-        <button class="primary" id="btnDemoStack" type="button">Demo: 3-JAR Shading &amp; Paper Classloader Collision</button>
+        <button class="primary" id="btnDemoV050" type="button">Demo: Cross-Plugin Leak &amp; Multi-Loader Graph (v0.5.0)</button>
+        <button id="btnDemoStack" type="button">Demo: 3-JAR Shading &amp; Paper Classloader Collision</button>
         <button id="btnDemoSingle" type="button">Demo: Single-JAR Unrelocated bStats + Drift</button>
         <button id="btnDemoLeak" type="button">Demo: Scheduler &amp; Classloader Leak (J070-J073)</button>
       </div>
@@ -421,7 +422,7 @@
   </div>
 
   <footer>
-    <div>PluginScope v0.4.0 | Pure client-side ZIP central directory + JVM bytecode constant-pool and lifecycle inspector (Apache-2.0)</div>
+    <div>PluginScope v0.5.0 | Pure client-side ZIP central directory + JVM bytecode constant-pool and cross-plugin lifecycle inspector (Apache-2.0)</div>
     <div>Companion tools: <a href="https://github.com/SalyyS1/foliascan">foliascan</a> | <a href="https://github.com/SalyyS1/serverdoctor">serverdoctor</a> | <a href="https://github.com/SalyyS1/minecraftkit">minecraftkit</a></div>
   </footer>
 </div>
@@ -809,14 +810,23 @@
             } else if (subIndent === 4 && currentPhase) {
               const dIdx = subTrim.indexOf(":");
               const dName = dIdx >= 0 ? subTrim.slice(0, dIdx).trim() : subTrim;
-              currentDep = { name: unquote(dName), phase: currentPhase, required: true, joinClasspath: true };
+              currentDep = { name: unquote(dName), phase: currentPhase, required: true, joinClasspath: true, load: null, optionErrors: [] };
               paperDeps.push(currentDep);
             } else if (subIndent >= 6 && currentDep && subTrim.includes(":")) {
               const oIdx = subTrim.indexOf(":");
               const oKey = subTrim.slice(0, oIdx).trim();
               const oVal = unquote(subTrim.slice(oIdx + 1).trim());
-              if (oKey === "required") currentDep.required = (oVal !== "false");
-              if (oKey === "join-classpath") currentDep.joinClasspath = (oVal !== "false");
+              if (oKey === "required") {
+                if (oVal !== "true" && oVal !== "false") currentDep.optionErrors.push(`required must be boolean, got '${oVal}'`);
+                currentDep.required = (oVal !== "false");
+              } else if (oKey === "join-classpath") {
+                if (oVal !== "true" && oVal !== "false") currentDep.optionErrors.push(`join-classpath must be boolean, got '${oVal}'`);
+                currentDep.joinClasspath = (oVal !== "false");
+              } else if (oKey === "load") {
+                currentDep.load = oVal;
+              } else {
+                currentDep.optionErrors.push(`unknown option '${oKey}'`);
+              }
             }
             i++;
           }
@@ -840,11 +850,13 @@
       version: scalar["version"] || null,
       main: scalar["main"] || null,
       apiVersion: scalar["api-version"] || null,
+      load: scalar["load"] || null,
       bootstrapper: scalar["bootstrapper"] || null,
       loader: scalar["loader"] || null,
       foliaSupported: scalar["folia-supported"] === "true",
       hasOpenClassloader: scalar["has-open-classloader"] === "false" ? false : true,
       hasDependsTypo: Object.prototype.hasOwnProperty.call(scalar, "depends") || Object.prototype.hasOwnProperty.call(listMap, "depends"),
+      loadBefore: listMap["loadbefore"] || [],
       provides: listMap["provides"] || [],
       libraries: listMap["libraries"] || [],
       commands,
@@ -1010,6 +1022,57 @@
             `[${bootOnly.map(x => x.name).join(", ")}] is absent from dependencies.server; PaperPluginClassLoader will not expose its classes at server runtime.`,
             [], "Add the dependency under dependencies.server if runtime classes are referenced.");
         }
+
+        // J043: paper-plugin.yml dependency graph schema, colliding entrypoints, and contradictory load edges
+        const epPairs = [["main", d.main], ["bootstrapper", d.bootstrapper], ["loader", d.loader]].filter(x => !!x[1]);
+        for (let a = 0; a < epPairs.length; a++) {
+          for (let b = a + 1; b < epPairs.length; b++) {
+            if (epPairs[a][1] === epPairs[b][1]) {
+              add("J043", "critical", "paper-plugin.yml entrypoint classes collide",
+                `${prefix}paper-plugin.yml: entrypoints`,
+                `${epPairs[a][0]} and ${epPairs[b][0]} both point to '${epPairs[a][1]}'. Paper instantiates PluginBootstrap and PluginLoader before Bukkit server state exists.`,
+                [`${epPairs[a][0]} == ${epPairs[b][0]} (${epPairs[a][1]})`],
+                "Give main, bootstrapper, and loader distinct classes.");
+            }
+          }
+        }
+        const bootLoadByName = new Map();
+        for (const dep of d.dependencies) {
+          const ph = dep.phase || "server";
+          if (dep.load && dep.load !== "BEFORE" && dep.load !== "AFTER" && dep.load !== "OMIT") {
+            add("J043", "blocker", "Invalid paper-plugin.yml dependency load mode",
+              `${prefix}paper-plugin.yml: dependencies.${ph}.${dep.name}.load`,
+              `Invalid load mode '${dep.load}' on ${dep.name} (expected BEFORE, AFTER, or OMIT). Paper aborts loading this plugin.`,
+              [`dependencies.${ph}.${dep.name}.load: ${dep.load}`],
+              "Set load to BEFORE, AFTER, or OMIT.");
+          }
+          if (dep.optionErrors && dep.optionErrors.length > 0) {
+            add("J043", "warning", "Invalid option schema in paper-plugin.yml dependency",
+              `${prefix}paper-plugin.yml: dependencies.${ph}.${dep.name}`,
+              `Invalid option(s) in dependencies.${ph}.${dep.name}: ${dep.optionErrors.join("; ")}.`,
+              dep.optionErrors,
+              "Use only load (BEFORE|AFTER|OMIT), required (boolean), and join-classpath (boolean).");
+          }
+          if (ph === "bootstrap" && dep.load) bootLoadByName.set(dep.name.toLowerCase(), dep);
+        }
+        for (const dep of d.dependencies.filter(x => !x.phase || x.phase === "server")) {
+          const bDep = bootLoadByName.get(dep.name.toLowerCase());
+          if (bDep && dep.load && ((bDep.load === "BEFORE" && dep.load === "AFTER") || (bDep.load === "AFTER" && dep.load === "BEFORE"))) {
+            add("J043", "critical", "Contradictory bootstrap vs server load order in paper-plugin.yml",
+              `${prefix}paper-plugin.yml: dependencies.${dep.name}`,
+              `dependencies.bootstrap sets load: ${bDep.load} while dependencies.server sets load: ${dep.load} for '${dep.name}'.`,
+              [`bootstrap.${bDep.name}.load: ${bDep.load}`, `server.${dep.name}.load: ${dep.load}`],
+              "Align load order across bootstrap and server phases.");
+          }
+        }
+      }
+
+      if (d.load && d.load.toUpperCase() !== "STARTUP" && d.load.toUpperCase() !== "POSTWORLD") {
+        add("J043", d.kind === "paper-plugin.yml" ? "blocker" : "warning",
+          "Invalid top-level load stage in descriptor",
+          `${prefix}${d.kind}: load`,
+          `Top-level load is '${d.load}'. Accepted load stages are STARTUP and POSTWORLD.`,
+          [], "Set load to STARTUP or POSTWORLD.");
       }
 
       if (d.hasDependsTypo) {
@@ -1269,6 +1332,35 @@
             }
           }
         }
+
+        // J074: Cross-plugin hook or Netty pipeline handler leak
+        const papiRoot = "me/clip/placeholderapi/expansion/PlaceholderExpansion";
+        const papiSubs = new Set(ownClasses.filter(c => c.superName === papiRoot).map(c => c.internalName));
+        const papiReg = ownCalls.find(mc => (mc.owner === papiRoot || papiSubs.has(mc.owner)) && mc.name === "register");
+        const papiUnreg = hasDisable && ownCalls.some(mc => (mc.owner === papiRoot || papiSubs.has(mc.owner)) && mc.name === "unregister");
+        if (papiReg && !papiUnreg) {
+          add("J074", "critical", "Cross-plugin hook, service provider, or Netty handler is leaked across disable",
+            `${prefix}${papiReg.cls.replace(/\//g, ".")}`,
+            "Calls PlaceholderExpansion#register() without PlaceholderExpansion#unregister() in onDisable(), pinning PaperPluginClassLoader inside PlaceholderAPI.",
+            [`${papiReg.cls.replace(/\//g, ".")} -> ${papiReg.owner.replace(/\//g, ".")}#register`],
+            "Call PlaceholderExpansion#unregister() in onDisable().");
+        }
+
+        const nettyAdd = ownCalls.find(mc =>
+          (mc.owner === "io/netty/channel/ChannelPipeline" || mc.owner === "io/netty/channel/DefaultChannelPipeline") &&
+          (mc.name === "addBefore" || mc.name === "addAfter" || mc.name === "addFirst" || mc.name === "addLast")
+        );
+        const nettyRem = hasDisable && ownCalls.some(mc =>
+          (mc.owner === "io/netty/channel/ChannelPipeline" || mc.owner === "io/netty/channel/DefaultChannelPipeline") &&
+          (mc.name === "remove" || mc.name === "replace")
+        );
+        if (nettyAdd && !nettyRem) {
+          add("J074", "critical", "Cross-plugin hook, service provider, or Netty handler is leaked across disable",
+            `${prefix}${nettyAdd.cls.replace(/\//g, ".")}`,
+            `Injects Netty handler via ChannelPipeline#${nettyAdd.name} without ChannelPipeline#remove in onDisable(), retaining custom ChannelHandler classes on live player sockets.`,
+            [`${nettyAdd.cls.replace(/\//g, ".")} -> ${nettyAdd.owner.replace(/\//g, ".")}#${nettyAdd.name}`],
+            "Remove injected ChannelHandler instances from every ChannelPipeline in onDisable().");
+        }
       }
     }
 
@@ -1311,15 +1403,121 @@
           }
         }
 
-        // Missing hard dependencies
+        // Missing hard dependencies + S005 & S006 multi-loader dependency graph checks
+        const serverOrderEdges = [];
+        const bootOrderEdges = [];
         for (const p of plugins) {
           for (const dep of p.descriptor.dependencies) {
-            if (!byName.has(dep.name.toLowerCase()) && dep.required) {
+            const target = byName.get(dep.name.toLowerCase());
+            if (!target && dep.required) {
               add("S001", "blocker", "Hard dependency is not in the loaded plugin set",
                 `${p.descriptor.name} -> ${dep.name}`,
                 `${p.descriptor.name} requires ${dep.name}, which was not among the dropped JARs.`, [],
                 "Include the required plugin JAR or mark the dependency optional.");
             }
+            if (!target || target === p) continue;
+            if (p.descriptor.kind === "paper-plugin.yml") {
+              if (dep.phase === "bootstrap") {
+                if (target.descriptor.kind === "plugin.yml") {
+                  add("S005", dep.required ? "blocker" : "warning",
+                    "Paper bootstrap dependency targets a legacy plugin.yml plugin",
+                    `${p.descriptor.name} -> ${target.descriptor.name}`,
+                    `Paper plugin ${p.descriptor.name} declares ${dep.required ? "required" : "optional"} dependencies.bootstrap.${dep.name}, which resolves to legacy plugin.yml plugin ${target.descriptor.name}.`,
+                    [`${p.fileName} (dependencies.bootstrap.${dep.name}) -> ${target.fileName} (plugin.yml)`],
+                    "Move the dependency to dependencies.server or migrate the target plugin to paper-plugin.yml.");
+                } else if (dep.load === "BEFORE") {
+                  bootOrderEdges.push({ earlier: target, later: p, why: `${p.descriptor.name}: bootstrap.${dep.name}.load=BEFORE` });
+                } else if (dep.load === "AFTER") {
+                  bootOrderEdges.push({ earlier: p, later: target, why: `${p.descriptor.name}: bootstrap.${dep.name}.load=AFTER` });
+                }
+              } else {
+                if (dep.load === "BEFORE") {
+                  serverOrderEdges.push({ earlier: target, later: p, why: `${p.descriptor.name}: server.${dep.name}.load=BEFORE` });
+                } else if (dep.load === "AFTER") {
+                  serverOrderEdges.push({ earlier: p, later: target, why: `${p.descriptor.name}: server.${dep.name}.load=AFTER` });
+                }
+              }
+            } else {
+              serverOrderEdges.push({
+                earlier: target,
+                later: p,
+                why: `${p.descriptor.name}: plugin.yml ${dep.required ? "depend" : "softdepend"} includes ${dep.name}`
+              });
+            }
+          }
+          for (const lb of (p.descriptor.loadBefore || [])) {
+            const target = byName.get(lb.toLowerCase());
+            if (target && target !== p) {
+              serverOrderEdges.push({ earlier: p, later: target, why: `${p.descriptor.name}: plugin.yml loadbefore includes ${lb}` });
+            }
+          }
+        }
+
+        function detectOrderCycles(edges) {
+          const adj = new Map();
+          for (const e of edges) {
+            const k = e.earlier.descriptor.name.toLowerCase();
+            if (!adj.has(k)) adj.set(k, []);
+            adj.get(k).push(e);
+          }
+          const state = new Map();
+          const stack = [];
+          const cycles = [];
+          function dfs(u) {
+            state.set(u, 1);
+            stack.push(u);
+            for (const e of (adj.get(u) || [])) {
+              const v = e.later.descriptor.name.toLowerCase();
+              const st = state.get(v) || 0;
+              if (st === 0) dfs(v);
+              else if (st === 1) {
+                const idx = stack.indexOf(v);
+                const ring = stack.slice(idx);
+                const sig = ring.slice().sort().join("|");
+                if (!cycles.some(c => c.sig === sig)) {
+                  const names = ring.map(k => byName.get(k).descriptor.name).concat([byName.get(v).descriptor.name]);
+                  const reasons = [];
+                  for (let r = 0; r < ring.length; r++) {
+                    const rk = ring[r];
+                    const nk = ring[(r + 1) % ring.length];
+                    for (const edge of (adj.get(rk) || [])) {
+                      if (edge.later.descriptor.name.toLowerCase() === nk) reasons.push(edge.why);
+                    }
+                  }
+                  cycles.push({ sig, names, reasons: Array.from(new Set(reasons)) });
+                }
+              }
+            }
+            stack.pop();
+            state.set(u, 2);
+          }
+          for (const k of adj.keys()) { if (!state.get(k)) dfs(k); }
+          return cycles;
+        }
+
+        for (const c of detectOrderCycles(bootOrderEdges)) {
+          add("S006", "blocker", "Multi-loader bootstrap load-order cycle",
+            `bootstrap: ${c.names.join(" -> ")}`,
+            "Paper dependencies.bootstrap BEFORE/AFTER edges form a topological cycle.",
+            c.reasons, "Flip one conflicting load: BEFORE/AFTER edge or use load: OMIT.");
+        }
+        const cycleSetSigs = new Set();
+        for (const c of detectOrderCycles(serverOrderEdges)) {
+          cycleSetSigs.add(c.sig);
+          add("S006", "critical", "Multi-loader server load-order cycle",
+            c.names.join(" -> "),
+            "Server load-order edges (BEFORE, AFTER, depend, softdepend, loadbefore) form a cycle.",
+            c.reasons, "Break the cycle by flipping one BEFORE/AFTER/loadbefore edge.");
+        }
+        for (const e of serverOrderEdges) {
+          const eStage = (e.earlier.descriptor.load || "POSTWORLD").toUpperCase();
+          const lStage = (e.later.descriptor.load || "POSTWORLD").toUpperCase();
+          const sig = [e.earlier.descriptor.name.toLowerCase(), e.later.descriptor.name.toLowerCase()].sort().join("|");
+          if (lStage === "STARTUP" && eStage === "POSTWORLD" && !cycleSetSigs.has(sig)) {
+            add("S006", "warning", "STARTUP plugin ordered after POSTWORLD plugin",
+              `${e.later.descriptor.name} (STARTUP) <- ${e.earlier.descriptor.name} (POSTWORLD)`,
+              `${e.later.descriptor.name} declares load: STARTUP while topological load order places POSTWORLD plugin ${e.earlier.descriptor.name} before it.`,
+              [e.why], "Set load: STARTUP on the dependency as well, or decouple startup ordering.");
           }
         }
 
@@ -1508,6 +1706,116 @@
               `Custom Bukkit Event class ${dotted} is shaded unrelocated across ${uniqueClaimants.length} plugins: ${uniqueClaimants.join(", ")}. Each plugin maintains an isolated static HandlerList, silently dropping fired events.`,
               uniqueClaimants.map(n => `${n} bundles ${dotted}`),
               "Relocate custom Event classes or share them through a common API dependency.");
+          }
+        }
+
+        // S007: Transitive API classloader exposure across 3 plugins (A joins B, B signature exposes isolated C)
+        function canSeeRuntime(caller, target) {
+          const tNames = new Set([target.descriptor.name.toLowerCase(), ...(target.descriptor.provides || []).map(x => x.toLowerCase())]);
+          if (caller.descriptor.kind === "paper-plugin.yml") {
+            return caller.descriptor.dependencies.some(d =>
+              tNames.has(d.name.toLowerCase()) && (!d.phase || d.phase === "server") && d.joinClasspath !== false
+            );
+          }
+          return !(target.descriptor.kind === "paper-plugin.yml" && target.descriptor.hasOpenClassloader === false);
+        }
+
+        for (const p of plugins) {
+          const s007Triples = new Map();
+          for (const c of p.classes.filter(x => p.isOwnCode(x.internalName))) {
+            for (const mc of (c.methodCalls || [])) {
+              const bOwners = classOwners.get(mc.owner);
+              if (!bOwners || bOwners.length !== 1 || bOwners[0] === p) continue;
+              const bPlugin = bOwners[0];
+              if (!canSeeRuntime(p, bPlugin)) continue;
+              const sigMatches = (mc.desc || "").match(/L([A-Za-z0-9_/$]+);/g) || [];
+              for (const rawTok of sigMatches) {
+                const cType = rawTok.slice(1, -1);
+                const cOwners = classOwners.get(cType);
+                if (!cOwners || cOwners.length !== 1) continue;
+                const cPlugin = cOwners[0];
+                if (cPlugin === p || cPlugin === bPlugin) continue;
+                if (canSeeRuntime(p, cPlugin)) continue;
+                const key = `${bPlugin.descriptor.name}|${cPlugin.descriptor.name}`;
+                const item = s007Triples.get(key) || { b: bPlugin, c: cPlugin, types: new Set(), ev: [] };
+                item.types.add(cType.replace(/\//g, "."));
+                item.ev.push(`${c.internalName.replace(/\//g, ".")} -> ${mc.owner.replace(/\//g, ".")}#${mc.name}${mc.desc}`);
+                s007Triples.set(key, item);
+              }
+            }
+          }
+          for (const item of s007Triples.values()) {
+            add("S007", "critical", "Cross-plugin call signature exposes an isolated third plugin's types",
+              `${p.descriptor.name} -> ${item.b.descriptor.name} -> ${item.c.descriptor.name}`,
+              `${p.descriptor.name} joins ${item.b.descriptor.name}'s classpath and calls an API exposing ${item.c.descriptor.name} type(s) (${Array.from(item.types).join(", ")}), which ${p.descriptor.name}'s classloader cannot resolve.`,
+              Array.from(new Set(item.ev)).slice(0, 4),
+              "Declare the third plugin under dependencies.server with join-classpath: true in paper-plugin.yml.");
+          }
+        }
+
+        // S070: Cross-plugin static callback registry sink or foreign instance retention
+        const registryClasses = new Map();
+        for (const b of plugins) {
+          for (const c of b.classes.filter(x => b.isOwnCode(x.internalName))) {
+            if ((c.staticFields || []).length > 0) {
+              registryClasses.set(c.internalName, { plugin: b, fields: c.staticFields });
+            }
+          }
+        }
+
+        for (const a of plugins) {
+          const ownA = a.classes.filter(x => a.isOwnCode(x.internalName));
+          const callsA = ownA.flatMap(c => (c.methodCalls || []).map(mc => ({ cls: c.internalName, ...mc })));
+          const hasDisableA = ownA.some(c => (c.declaredMethods || []).includes("onDisable()V"));
+          const hasPluginDisableListenerA = ownA.some(c =>
+            (c.declaredMethods || []).some(m => m.includes("PluginDisableEvent;") || m.includes("ServiceUnregisterEvent;"))
+          );
+          const clearsInA = (hasDisableA || hasPluginDisableListenerA) && callsA.some(mc => mc.name === "clear" || mc.name === "remove");
+
+          // 1. Direct cross-plugin static field retention in A
+          for (const c of ownA) {
+            for (const sf of (c.staticFields || [])) {
+              const sig = (sf.signature || "") + " " + (sf.descriptor || "");
+              if (sig.includes("WeakHashMap") || sig.includes("WeakReference") || sig.includes("SoftReference")) continue;
+              const matches = sig.match(/L([A-Za-z0-9_/$]+);/g) || [];
+              for (const rawTok of matches) {
+                const fType = rawTok.slice(1, -1);
+                const fOwners = classOwners.get(fType);
+                if (!fOwners || fOwners.length !== 1 || fOwners[0] === a) continue;
+                if (!clearsInA) {
+                  const b = fOwners[0];
+                  const isColl = /^Ljava\/util\/(List|ArrayList|Set|HashSet|Collection|Queue|Deque|Map|HashMap|concurrent\/)/.test(sf.descriptor);
+                  add("S070", isColl ? "critical" : "warning",
+                    "Cross-plugin ASM dataflow retains foreign plugin callbacks or instances across disable",
+                    `${a.descriptor.name} -> ${b.descriptor.name} (${c.internalName.replace(/\//g, ".")}#${sf.name})`,
+                    `${a.descriptor.name} retains ${b.descriptor.name} instance (${fType.replace(/\//g, ".")}) in static ${isColl ? "collection" : "field"} ${c.internalName.replace(/\//g, ".")}#${sf.name} without clearing in onDisable() or PluginDisableEvent.`,
+                    [`static field ${sf.name}: ${sf.signature || sf.descriptor}`],
+                    "Clear static fields and collections holding foreign plugin instances in onDisable() and PluginDisableEvent.");
+                }
+              }
+            }
+          }
+
+          // 2. Callback registration into B's static registry without unregister/remove in A#onDisable
+          const seenRegSinks = new Set();
+          for (const mc of callsA) {
+            const regTarget = registryClasses.get(mc.owner);
+            if (!regTarget || regTarget.plugin === a) continue;
+            if (!/^(register|add|hook|subscribe)/i.test(mc.name)) continue;
+            const callsUnreg = hasDisableA && callsA.some(u =>
+              u.owner === mc.owner && /^(unregister|deregister|remove|clear|unhook)/i.test(u.name)
+            );
+            const dedup = `${mc.owner}#${mc.name}`;
+            if (!callsUnreg && !seenRegSinks.has(dedup)) {
+              seenRegSinks.add(dedup);
+              const sinkField = regTarget.fields[0];
+              add("S070", "critical",
+                "Cross-plugin ASM dataflow retains foreign plugin callbacks or instances across disable",
+                `${a.descriptor.name} -> ${regTarget.plugin.descriptor.name} (${mc.cls.replace(/\//g, ".")})`,
+                `${a.descriptor.name} registers callback into ${regTarget.plugin.descriptor.name}'s static registry ${mc.owner.replace(/\//g, ".")}#${mc.name} (retained in ${mc.owner.replace(/\//g, ".")}#${sinkField.name}) without invoking unregister/remove in onDisable().`,
+                [`${mc.cls.replace(/\//g, ".")} -> ${mc.owner.replace(/\//g, ".")}#${mc.name} -> static ${mc.owner.replace(/\//g, ".")}#${sinkField.name}`],
+                "Invoke the target plugin's unregister/remove API inside onDisable().");
+            }
           }
         }
       }
@@ -2040,6 +2348,194 @@
     await handleFiles([leakJar]);
   });
 
+  // Demo 4 (v0.5.0): Cross-Plugin Leak (J074, S070) & Multi-Loader Dependency Graph (J043, S005, S006, S007)
+  function buildRichSyntheticClass(spec) {
+    const enc = new TextEncoder();
+    const cpChunks = [];
+    let cpIndex = 1;
+    const utfIdx = {};
+    function u8str(s) {
+      if (utfIdx[s]) return utfIdx[s];
+      const raw = enc.encode(s);
+      const b = new Uint8Array(3 + raw.length);
+      b[0] = 1; b[1] = (raw.length >> 8) & 0xff; b[2] = raw.length & 0xff;
+      b.set(raw, 3);
+      cpChunks.push(b);
+      utfIdx[s] = cpIndex++;
+      return utfIdx[s];
+    }
+    function clsRef(name) {
+      const u = u8str(name);
+      cpChunks.push(new Uint8Array([7, (u >> 8) & 0xff, u & 0xff]));
+      return cpIndex++;
+    }
+    function addMethodRef(owner, name, desc) {
+      const cIdx = clsRef(owner);
+      const nIdx = u8str(name);
+      const dIdx = u8str(desc);
+      cpChunks.push(new Uint8Array([12, (nIdx >> 8) & 0xff, nIdx & 0xff, (dIdx >> 8) & 0xff, dIdx & 0xff]));
+      const ntIdx = cpIndex++;
+      cpChunks.push(new Uint8Array([10, (cIdx >> 8) & 0xff, cIdx & 0xff, (ntIdx >> 8) & 0xff, ntIdx & 0xff]));
+      return cpIndex++;
+    }
+
+    const thisClassIdx = clsRef(spec.internalName);
+    const superClassIdx = clsRef(spec.superName || "java/lang/Object");
+    const sigAttrName = u8str("Signature");
+    const codeAttrName = u8str("Code");
+
+    const fields = (spec.staticFields || []).map(f => ({
+      nameIdx: u8str(f.name),
+      descIdx: u8str(f.desc),
+      sigIdx: f.sig ? u8str(f.sig) : 0
+    }));
+    const methods = [{ name: "<init>", desc: "()V" }, ...(spec.methods || [])].map(m => ({
+      nameIdx: u8str(m.name),
+      descIdx: u8str(m.desc || "()V")
+    }));
+    for (const call of (spec.calls || [])) {
+      addMethodRef(call.owner, call.name, call.desc || "()V");
+    }
+
+    const header = new Uint8Array(10);
+    const hv = new DataView(header.buffer);
+    hv.setUint32(0, 0xCAFEBABE, false);
+    hv.setUint16(6, 65, false);
+    hv.setUint16(8, cpIndex, false);
+
+    const clsTail = new Uint8Array(10);
+    const tv = new DataView(clsTail.buffer);
+    tv.setUint16(0, 0x0021, false);
+    tv.setUint16(2, thisClassIdx, false);
+    tv.setUint16(4, superClassIdx, false);
+    tv.setUint16(6, 0, false);
+    tv.setUint16(8, fields.length, false);
+
+    const fieldParts = fields.map(f => {
+      if (f.sigIdx) {
+        const b = new Uint8Array(16);
+        const dv = new DataView(b.buffer);
+        dv.setUint16(0, 0x0019, false);
+        dv.setUint16(2, f.nameIdx, false);
+        dv.setUint16(4, f.descIdx, false);
+        dv.setUint16(6, 1, false);
+        dv.setUint16(8, sigAttrName, false);
+        dv.setUint32(10, 2, false);
+        dv.setUint16(14, f.sigIdx, false);
+        return b;
+      }
+      const b = new Uint8Array(8);
+      const dv = new DataView(b.buffer);
+      dv.setUint16(0, 0x0019, false);
+      dv.setUint16(2, f.nameIdx, false);
+      dv.setUint16(4, f.descIdx, false);
+      dv.setUint16(6, 0, false);
+      return b;
+    });
+
+    const methodsHeader = new Uint8Array(2);
+    new DataView(methodsHeader.buffer).setUint16(0, methods.length, false);
+    const methodParts = methods.map(m => {
+      const b = new Uint8Array(8 + 6 + 13);
+      const mv = new DataView(b.buffer);
+      mv.setUint16(0, 0x0001, false);
+      mv.setUint16(2, m.nameIdx, false);
+      mv.setUint16(4, m.descIdx, false);
+      mv.setUint16(6, 1, false);
+      mv.setUint16(8, codeAttrName, false);
+      mv.setUint32(10, 13, false);
+      mv.setUint16(14, 1, false);
+      mv.setUint16(16, 1, false);
+      mv.setUint32(18, 1, false);
+      b[22] = 0xb1;
+      return b;
+    });
+
+    const parts = [header, ...cpChunks, clsTail, ...fieldParts, methodsHeader, ...methodParts, new Uint8Array([0, 0])];
+    const total = parts.reduce((s, p) => s + p.length, 0);
+    const out = new Uint8Array(total);
+    let pos = 0;
+    for (const p of parts) { out.set(p, pos); pos += p.length; }
+    return out;
+  }
+
+  document.getElementById("btnDemoV050").addEventListener("click", async () => {
+    const legacyVaultJar = buildStoredZip("LegacyCurrency-1.2.jar", {
+      "plugin.yml": [
+        "name: LegacyCurrency",
+        "version: '1.2.0'",
+        "main: com.acme.currency.CurrencyPlugin",
+        "api-version: '1.21.4'",
+        "loadbefore: [BridgeHooks]"
+      ].join("\n"),
+      "com/acme/currency/CurrencyPlugin.class": buildRichSyntheticClass({ internalName: "com/acme/currency/CurrencyPlugin" }),
+      "com/acme/currency/WalletToken.class": buildRichSyntheticClass({ internalName: "com/acme/currency/WalletToken" })
+    });
+
+    const bridgeJar = buildStoredZip("BridgeHooks-2.0.jar", {
+      "paper-plugin.yml": [
+        "name: BridgeHooks",
+        "version: '2.0.0'",
+        "main: com.acme.bridge.BridgePlugin",
+        "api-version: '26.3'",
+        "folia-supported: true",
+        "dependencies:",
+        "  bootstrap:",
+        "    LegacyCurrency:",
+        "      required: true",
+        "      load: BEFORE",
+        "  server:",
+        "    LegacyCurrency:",
+        "      required: true",
+        "      load: AFTER",
+        "      join-classpath: true"
+      ].join("\n"),
+      "com/acme/bridge/BridgePlugin.class": buildRichSyntheticClass({ internalName: "com/acme/bridge/BridgePlugin" }),
+      "com/acme/bridge/HookRegistry.class": buildRichSyntheticClass({
+        internalName: "com/acme/bridge/HookRegistry",
+        staticFields: [{ name: "HOOKS", desc: "Ljava/util/List;", sig: "Ljava/util/List<Ljava/lang/Object;>;" }],
+        methods: [
+          { name: "registerHook", desc: "(Ljava/lang/Object;)V" },
+          { name: "unregisterHook", desc: "(Ljava/lang/Object;)V" },
+          { name: "mintToken", desc: "()Lcom/acme/currency/WalletToken;" }
+        ]
+      })
+    });
+
+    const questAddonJar = buildStoredZip("QuestAddon-0.5.0.jar", {
+      "paper-plugin.yml": [
+        "name: QuestAddon",
+        "version: '0.5.0'",
+        "main: com.acme.quests.QuestPlugin",
+        "bootstrapper: com.acme.quests.QuestPlugin",
+        "api-version: '26.3'",
+        "load: STARTUP",
+        "folia-supported: true",
+        "dependencies:",
+        "  server:",
+        "    BridgeHooks:",
+        "      required: true",
+        "      load: BEFORE",
+        "      join-classpath: true",
+        "    LegacyCurrency:",
+        "      required: false",
+        "      load: SOMETIMES",
+        "      join-classpath: false"
+      ].join("\n"),
+      "com/acme/quests/QuestPlugin.class": buildRichSyntheticClass({
+        internalName: "com/acme/quests/QuestPlugin",
+        staticFields: [{ name: "CACHED_BRIDGE", desc: "Lcom/acme/bridge/BridgePlugin;" }],
+        calls: [
+          { owner: "com/acme/bridge/HookRegistry", name: "registerHook", desc: "(Ljava/lang/Object;)V" },
+          { owner: "com/acme/bridge/HookRegistry", name: "mintToken", desc: "()Lcom/acme/currency/WalletToken;" },
+          { owner: "io/netty/channel/ChannelPipeline", name: "addBefore", desc: "(Ljava/lang/String;Ljava/lang/String;Lio/netty/channel/ChannelHandler;)Lio/netty/channel/ChannelPipeline;" }
+        ]
+      })
+    });
+
+    await handleFiles([legacyVaultJar, bridgeJar, questAddonJar]);
+  });
+
   function downloadBlob(filename, content, type) {
     const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);
@@ -2053,7 +2549,7 @@
   btnExportJson.addEventListener("click", () => {
     const payload = {
       tool: "pluginscope-web",
-      toolVersion: "0.4.0",
+      toolVersion: "0.5.0",
       jars: currentJars.map(j => ({
         fileName: j.fileName,
         plugin: j.descriptor ? j.descriptor.name : null,
@@ -2088,7 +2584,7 @@
         tool: {
           driver: {
             name: "pluginscope",
-            version: "0.4.0",
+            version: "0.5.0",
             informationUri: "https://github.com/SalyyS1/pluginscope",
             rules: uniqueRules
           }

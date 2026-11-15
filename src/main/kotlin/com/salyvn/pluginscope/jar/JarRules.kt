@@ -279,6 +279,22 @@ object JarRules {
             "join-classpath: true in paper-plugin.yml, and ensure bootstrapper/loader classes exist.",
     )
 
+    val PAPER_DEPENDENCY_GRAPH_INVALID = Rule(
+        id = "J043",
+        severity = Severity.CRITICAL,
+        title = "paper-plugin.yml dependency option, load order, or entrypoint collision",
+        rationale = "Paper deserializes dependencies.<phase>.<Plugin> through Configurate DependencyConfiguration " +
+            "(accepting only load: BEFORE | AFTER | OMIT, boolean required, and boolean join-classpath) and " +
+            "instantiates PluginBootstrap and PluginLoader before Bukkit server state exists. Invalid load enums " +
+            "abort plugin loading, colliding main/bootstrapper/loader classes trigger initialization crashes, and " +
+            "contradictory BEFORE vs AFTER edges across bootstrap, server, or dual plugin.yml descriptors create " +
+            "unsatisfiable load-order constraints.",
+        provenance = "PaperMC/Paper DependencyConfiguration.LoadOrder, PaperPluginMeta, and PluginLoadOrder",
+        fix = "Use BEFORE, AFTER, or OMIT for per-dependency load, STARTUP or POSTWORLD for root load, separate " +
+            "PluginBootstrap and PluginLoader from your JavaPlugin main class, and keep bootstrap/server/plugin.yml " +
+            "load directions consistent.",
+    )
+
     val UNREACHABLE_BUNDLE = Rule(
         id = "J050",
         severity = Severity.INFO,
@@ -349,6 +365,20 @@ object JarRules {
             "ThreadLocal.remove() in a finally block.",
     )
 
+    val CROSS_PLUGIN_HOOK_OR_PIPELINE_LEAK = Rule(
+        id = "J074",
+        severity = Severity.CRITICAL,
+        title = "Cross-plugin hook, expansion, or Netty pipeline handler leaked across reloads",
+        rationale = "Injecting custom ChannelHandler instances into Netty ChannelPipeline without removal in " +
+            "onDisable, registering persistent PlaceholderExpansion hooks without unregister() in onDisable, or " +
+            "caching foreign Plugin and ServicesManager provider instances inside static fields without clearing " +
+            "in onDisable or PluginDisableEvent retains foreign or own PaperPluginClassLoader graphs across " +
+            "plugin disable and reload.",
+        provenance = "io.netty.channel.ChannelPipeline handler retention, PlaceholderAPI ExpansionManager lifecycle, and Bukkit ServicesManager / PluginManager references",
+        fix = "Unregister PlaceholderExpansion instances and remove custom Netty ChannelPipeline handlers in " +
+            "onDisable, and clear static cross-plugin provider fields in onDisable and PluginDisableEvent.",
+    )
+
     val all = listOf(
         NOT_A_PLUGIN, DESCRIPTOR_INCOMPLETE, DESCRIPTOR_UNPARSEABLE, MAIN_CLASS_MISSING, NAME_ILLEGAL,
         MAIN_IN_SERVER_NAMESPACE, DESCRIPTOR_UNKNOWN_KEY, API_VERSION_ABSENT, API_VERSION_UNKNOWN,
@@ -356,8 +386,8 @@ object JarRules {
         CLASS_VERSION_TOO_NEW, CLASS_VERSION_MIXED, SERVER_NAMESPACE_BUNDLED, PROVIDED_LIBRARY_BUNDLED,
         UNRELOCATED_LIBRARY, KOTLIN_STDLIB_BUNDLED, BSTATS_UNRELOCATED, LEGACY_VERSIONED_NMS_ON_MODERN_PAPER,
         MOJANG_MAPPED_BYTECODE_IN_LEGACY_DESCRIPTOR, JAR_HYGIENE, SIGNATURE_LEFTOVER, DEPENDENCY_SUSPECT,
-        RUNTIME_LIBRARIES_HINT, PAPER_DESCRIPTOR_DRIFT, UNREACHABLE_BUNDLE, FOLIA_DECLARATION,
-        UNCANCELLED_SCHEDULER_TASK, UNMANAGED_THREAD_OR_EXECUTOR_LEAK,
-        STATIC_SERVER_ENTITY_RETENTION, CLASSLOADER_PINNING_HOOK,
+        RUNTIME_LIBRARIES_HINT, PAPER_DESCRIPTOR_DRIFT, PAPER_DEPENDENCY_GRAPH_INVALID, UNREACHABLE_BUNDLE,
+        FOLIA_DECLARATION, UNCANCELLED_SCHEDULER_TASK, UNMANAGED_THREAD_OR_EXECUTOR_LEAK,
+        STATIC_SERVER_ENTITY_RETENTION, CLASSLOADER_PINNING_HOOK, CROSS_PLUGIN_HOOK_OR_PIPELINE_LEAK,
     )
 }

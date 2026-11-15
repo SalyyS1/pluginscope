@@ -119,9 +119,19 @@ internal object LifecycleChecks {
 
         data class NewObject(val internalType: String, val line: Int?) : TaintVal
 
+        data class CrossPluginRef(val apiCall: String, val line: Int?) : TaintVal
+
         data object NullConst : TaintVal
         data object Unknown : TaintVal
     }
+
+    private data class StaticCrossPluginWrite(
+        val fieldKey: String,
+        val fieldDesc: String,
+        val inCollection: Boolean,
+        val location: String,
+        val apiCall: String,
+    )
 
     private data class StaticTaskWrite(
         val fieldKey: String,
@@ -273,6 +283,12 @@ internal object LifecycleChecks {
             sink = sink,
         )
         checkClassloaderPinningHooks(
+            models = models,
+            disableReached = disableReached,
+            sink = sink,
+        )
+        checkCrossPluginHookAndPipelineLeaks(
+            jar = jar,
             models = models,
             disableReached = disableReached,
             sink = sink,
@@ -591,6 +607,273 @@ internal object LifecycleChecks {
                                 "plugin bytecode, retaining values inside shared server and Netty ThreadLocalMaps.",
                             evidence = listOf("static field ${field.name}: ${field.descriptor}"),
                         )
+                    }
+                }
+            }
+        }
+    }
+
+    private fun checkCrossPluginHookAndPipelineLeaks(
+        jar: JarInspection,
+        models: Map<String, OwnClassModel>,
+        disableReached: Set<MethodRef>,
+        sink: FindingSink,
+    ) {
+        val papiRoot = "me/clip/placeholderapi/expansion/PlaceholderExpansion"
+        val papiSubclasses = findSubclassesOf(models, papiRoot)
+        val nettyPipelines = setOf("io/netty/channel/ChannelPipeline", "io/netty/channel/DefaultChannelPipeline")
+        val nettyAddMethods = setOf("addBefore", "addAfter", "addFirst", "addLast")
+
+        val disableCalls = disableCallSequence(models, disableReached).toList()
+        val unregistersPapi = disableCalls.any { call ->
+            (call.owner == papiRoot || call.owner in papiSubclasses) && call.name == "unregister"
+        }
+        val removesNetty = disableCalls.any { call ->
+            call.owner in nettyPipelines && (call.name == "remove" || call.name == "replace")
+        }
+
+        val papiSites = mutableListOf<Pair<String, String>>()
+        val nettySites = mutableListOf<Pair<String, String>>()
+        val crossWrites = mutableListOf<StaticCrossPluginWrite>()
+
+        val fieldDefs = HashMap<String, StaticFieldDef>()
+        for (cls in models.values) {
+            for (f in cls.staticFields) fieldDefs[f.fieldKey] = f
+        }
+
+        for (cls in models.values) {
+            for (method in cls.methods.values) {
+                val methodRef = MethodRef(cls.internalName, method.key)
+                if (methodRef in disableReached) continue
+
+                for (insn in method.insns) {
+                    if (insn is FlowInsn.Call) {
+                        val loc = formatLoc(cls.internalName, method.name, insn.line)
+                        if ((insn.owner == papiRoot || insn.owner in papiSubclasses) &&
+                            insn.name == "register" && insn.descriptor == "()Z"
+                        ) {
+                            papiSites += loc to "${insn.owner.replace('/', '.')}#register()Z"
+                        } else if (insn.owner in nettyPipelines && insn.name in nettyAddMethods) {
+                            nettySites += loc to "${insn.owner.replace('/', '.')}#${insn.name}"
+                        }
+                    }
+                }
+
+                simulateCrossPluginMethodDataflow(
+                    jar = jar,
+                    cls = cls,
+                    method = method,
+                    fieldDefs = fieldDefs,
+                    onStaticWrite = { crossWrites += it },
+                )
+            }
+        }
+
+        if (!unregistersPapi && papiSites.isNotEmpty()) {
+            for ((loc, callDesc) in papiSites.distinctBy { it.first }.take(4)) {
+                sink.add(
+                    rule = JarRules.CROSS_PLUGIN_HOOK_OR_PIPELINE_LEAK,
+                    location = loc,
+                    detail = "PlaceholderExpansion#register() registers a persistent expansion instance without " +
+                        "PlaceholderExpansion#unregister() reachable from onDisable(), pinning PaperPluginClassLoader inside PlaceholderAPI.",
+                    evidence = listOf("$loc calls $callDesc"),
+                    severityOverride = Severity.CRITICAL,
+                )
+            }
+        }
+
+        if (!removesNetty && nettySites.isNotEmpty()) {
+            for ((loc, callDesc) in nettySites.distinctBy { it.first }.take(4)) {
+                sink.add(
+                    rule = JarRules.CROSS_PLUGIN_HOOK_OR_PIPELINE_LEAK,
+                    location = loc,
+                    detail = "Netty ChannelPipeline handler is injected via ${callDesc.substringAfter('#')} without " +
+                        "ChannelPipeline#remove reachable from onDisable(), retaining custom ChannelHandler classes on live player sockets.",
+                    evidence = listOf("$loc calls $callDesc"),
+                    severityOverride = Severity.CRITICAL,
+                )
+            }
+        }
+
+        if (crossWrites.isNotEmpty()) {
+            val unloadSeeds = buildSet {
+                for (cls in models.values) {
+                    for (m in cls.methods.values) {
+                        if (m.descriptor.contains("Lorg/bukkit/event/server/PluginDisableEvent;") ||
+                            m.descriptor.contains("Lorg/bukkit/event/server/ServiceUnregisterEvent;")
+                        ) {
+                            add(MethodRef(cls.internalName, m.key))
+                        }
+                    }
+                }
+            }
+            val cleanupReached = disableReached + computeReachableMethods(models, unloadSeeds)
+            val cleanedFields = findClearedOrRemovedStaticFields(models, cleanupReached)
+
+            for ((fieldKey, writes) in crossWrites.groupBy { it.fieldKey }) {
+                if (fieldKey in cleanedFields) continue
+                val def = fieldDefs[fieldKey]
+                val combinedType = ((def?.signature ?: "") + " " + (def?.descriptor ?: writes.first().fieldDesc))
+                if (WEAK_CONTAINER_MARKERS.any { combinedType.contains(it) }) continue
+
+                val first = writes.first()
+                val inColl = writes.any { it.inCollection }
+                sink.add(
+                    rule = JarRules.CROSS_PLUGIN_HOOK_OR_PIPELINE_LEAK,
+                    location = first.location,
+                    detail = "Foreign plugin or ServicesManager provider from ${first.apiCall} is stored in static " +
+                        "${if (inColl) "collection" else "field"} ${fieldKey.replace('/', '.')} without clearing in " +
+                        "onDisable() or PluginDisableEvent / ServiceUnregisterEvent.",
+                    evidence = writes.map { "${it.location} -> ${it.apiCall} -> ${fieldKey.replace('/', '.')}" }.distinct().take(4),
+                    severityOverride = if (inColl) Severity.CRITICAL else Severity.WARNING,
+                )
+            }
+        }
+    }
+
+    private fun simulateCrossPluginMethodDataflow(
+        jar: JarInspection,
+        cls: OwnClassModel,
+        method: OwnMethodModel,
+        fieldDefs: Map<String, StaticFieldDef>,
+        onStaticWrite: (StaticCrossPluginWrite) -> Unit,
+    ) {
+        val stack = ArrayDeque<TaintVal>()
+        val locals = HashMap<Int, TaintVal>()
+        fun popSafe(): TaintVal = if (stack.isNotEmpty()) stack.removeLast() else TaintVal.Unknown
+        fun peekSafe(): TaintVal = if (stack.isNotEmpty()) stack.last() else TaintVal.Unknown
+        fun push(v: TaintVal) {
+            stack.addLast(v)
+        }
+
+        for (insn in method.insns) {
+            when (insn) {
+                is FlowInsn.ConstNull -> push(TaintVal.NullConst)
+                is FlowInsn.TypeOp -> {
+                    when (insn.opcode) {
+                        Opcodes.NEW -> push(TaintVal.NewObject(insn.internalType, insn.line))
+                        Opcodes.CHECKCAST -> Unit
+                        else -> {
+                            popSafe()
+                            push(TaintVal.Unknown)
+                        }
+                    }
+                }
+
+                is FlowInsn.FieldOp -> {
+                    when (insn.opcode) {
+                        Opcodes.GETSTATIC -> push(TaintVal.StaticRef(insn.owner, insn.name, insn.descriptor))
+                        Opcodes.PUTSTATIC -> {
+                            val value = popSafe()
+                            if (value is TaintVal.CrossPluginRef) {
+                                val fKey = "${insn.owner}#${insn.name}"
+                                val def = fieldDefs[fKey]
+                                val rawType = Type.getType(def?.descriptor ?: insn.descriptor)
+                                val internalTarget = if (rawType.sort == Type.OBJECT) rawType.internalName else null
+                                val isOwnSingleton = internalTarget != null && jar.isOwnCode(internalTarget)
+                                val isPrimitiveOrString = rawType.sort != Type.OBJECT ||
+                                    internalTarget == "java/lang/String" || internalTarget == "java/lang/Boolean"
+                                if (!isOwnSingleton && !isPrimitiveOrString) {
+                                    onStaticWrite(
+                                        StaticCrossPluginWrite(
+                                            fieldKey = fKey,
+                                            fieldDesc = def?.descriptor ?: insn.descriptor,
+                                            inCollection = false,
+                                            location = formatLoc(cls.internalName, method.name, insn.line ?: value.line),
+                                            apiCall = value.apiCall,
+                                        )
+                                    )
+                                }
+                            }
+                        }
+
+                        Opcodes.GETFIELD -> {
+                            popSafe()
+                            push(TaintVal.Unknown)
+                        }
+
+                        Opcodes.PUTFIELD -> {
+                            popSafe()
+                            popSafe()
+                        }
+                    }
+                }
+
+                is FlowInsn.VarOp -> {
+                    when (insn.opcode) {
+                        Opcodes.ASTORE, Opcodes.ISTORE, Opcodes.LSTORE, Opcodes.FSTORE, Opcodes.DSTORE -> {
+                            locals[insn.slot] = popSafe()
+                        }
+
+                        Opcodes.ALOAD, Opcodes.ILOAD, Opcodes.LLOAD, Opcodes.FLOAD, Opcodes.DLOAD -> {
+                            push(locals[insn.slot] ?: TaintVal.Unknown)
+                        }
+                    }
+                }
+
+                is FlowInsn.StackOp -> {
+                    when (insn.opcode) {
+                        Opcodes.DUP -> push(peekSafe())
+                        Opcodes.POP, Opcodes.POP2 -> popSafe()
+                        Opcodes.SWAP -> {
+                            if (stack.size >= 2) {
+                                val a = stack.removeLast()
+                                val b = stack.removeLast()
+                                stack.addLast(a)
+                                stack.addLast(b)
+                            }
+                        }
+                    }
+                }
+
+                is FlowInsn.Call -> {
+                    val argCount = Type.getArgumentTypes(insn.descriptor).size
+                    val args = MutableList(argCount) { popSafe() }.asReversed()
+                    val receiver = if (insn.opcode == Opcodes.INVOKESTATIC) null else popSafe()
+
+                    if (receiver is TaintVal.StaticRef && insn.name in COLLECTION_ADD_METHODS) {
+                        val crossArg = args.filterIsInstance<TaintVal.CrossPluginRef>().firstOrNull()
+                        if (crossArg != null) {
+                            onStaticWrite(
+                                StaticCrossPluginWrite(
+                                    fieldKey = receiver.fieldKey,
+                                    fieldDesc = receiver.descriptor,
+                                    inCollection = true,
+                                    location = formatLoc(cls.internalName, method.name, insn.line ?: crossArg.line),
+                                    apiCall = crossArg.apiCall,
+                                )
+                            )
+                        }
+                    }
+
+                    val returnSort = Type.getReturnType(insn.descriptor).sort
+                    if (returnSort != Type.VOID) {
+                        val cross = when {
+                            insn.owner == "org/bukkit/plugin/ServicesManager" && insn.name == "load" ->
+                                TaintVal.CrossPluginRef("ServicesManager#load", insn.line)
+                            insn.owner == "org/bukkit/plugin/ServicesManager" && insn.name == "getRegistration" ->
+                                TaintVal.CrossPluginRef("ServicesManager#getRegistration", insn.line)
+                            insn.owner == "org/bukkit/plugin/RegisteredServiceProvider" && insn.name == "getProvider" ->
+                                TaintVal.CrossPluginRef("RegisteredServiceProvider#getProvider", insn.line)
+                            insn.owner == "org/bukkit/plugin/PluginManager" && insn.name == "getPlugin" ->
+                                TaintVal.CrossPluginRef("PluginManager#getPlugin", insn.line)
+                            else -> null
+                        }
+                        push(cross ?: TaintVal.Unknown)
+                    }
+                }
+
+                is FlowInsn.DynamicTarget -> {
+                    repeat(Type.getArgumentTypes(insn.callSiteDescriptor).size) { popSafe() }
+                    if (Type.getReturnType(insn.callSiteDescriptor).sort != Type.VOID) {
+                        push(TaintVal.Unknown)
+                    }
+                }
+
+                is FlowInsn.ReturnOp -> stack.clear()
+                is FlowInsn.OtherOp -> {
+                    if (insn.opcode in Opcodes.ICONST_M1..Opcodes.LDC) {
+                        push(TaintVal.Unknown)
                     }
                 }
             }

@@ -17,11 +17,13 @@ enum class DescriptorKind(val entryName: String) {
 data class DependencyRef(
     val name: String,
     val required: Boolean,
-    /** `BEFORE` / `AFTER` for paper-plugin.yml; null when the format does not express it. */
+    /** `BEFORE`, `AFTER`, or `OMIT` for paper-plugin.yml; null when the format does not express it. */
     val load: String? = null,
     val joinClasspath: Boolean? = null,
     /** `server` or `bootstrap` for paper-plugin.yml; null for legacy plugin.yml. */
     val phase: String? = null,
+    /** Schema errors inside a paper-plugin.yml dependency option block. */
+    val optionErrors: List<String> = emptyList(),
 )
 
 /**
@@ -205,14 +207,33 @@ object DescriptorParser {
                 continue
             }
             for ((depName, opts) in byName) {
+                val depKey = depName.toString()
+                val optErrors = mutableListOf<String>()
+                if (opts != null && opts !is Map<*, *>) {
+                    optErrors += "dependencies.$phaseName.$depKey must be a mapping of options, got '${opts}'"
+                }
                 val options = opts as? Map<Any?, Any?> ?: emptyMap<Any?, Any?>()
+                val validOptionKeys = setOf("load", "required", "join-classpath")
+                val unknownOpts = options.keys.map { it.toString() }.filterNot { it in validOptionKeys }.sorted()
+                if (unknownOpts.isNotEmpty()) {
+                    optErrors += "unknown option key(s) in dependencies.$phaseName.$depKey: ${unknownOpts.joinToString(", ")}"
+                }
+                val rawReq = options["required"]
+                if (rawReq != null && rawReq !is Boolean) {
+                    optErrors += "dependencies.$phaseName.$depKey.required must be boolean true or false, got '$rawReq'"
+                }
+                val rawJoin = options["join-classpath"]
+                if (rawJoin != null && rawJoin !is Boolean) {
+                    optErrors += "dependencies.$phaseName.$depKey.join-classpath must be boolean true or false, got '$rawJoin'"
+                }
                 out += DependencyRef(
-                    name = depName.toString(),
+                    name = depKey,
                     // Paper defaults `required` to true when the key is omitted.
-                    required = options["required"] as? Boolean ?: true,
-                    load = options["load"]?.toString(),
-                    joinClasspath = options["join-classpath"] as? Boolean,
+                    required = rawReq as? Boolean ?: true,
+                    load = options["load"]?.toString()?.trim(),
+                    joinClasspath = rawJoin as? Boolean,
                     phase = phaseName,
+                    optionErrors = optErrors,
                 )
             }
         }

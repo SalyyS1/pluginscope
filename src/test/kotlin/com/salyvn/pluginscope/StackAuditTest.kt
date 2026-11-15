@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.objectweb.asm.ClassWriter
+import org.objectweb.asm.Opcodes
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.extension
@@ -370,5 +372,257 @@ class StackAuditTest {
         assertEquals(Severity.CRITICAL, finding!!.severity)
         assertEquals("com.example.api.CustomTestEvent", finding.location)
         assertTrue(report.facts.containsKey("event handler conflicts"))
+    }
+
+    @Test
+    fun `paper bootstrap dependency targeting legacy plugin yml reports S005 blocker`(@TempDir directory: Path) {
+        val bootstrapCaller = FixtureJars.pluginJar(
+            jarName = "BootstrapCaller",
+            descriptor = FixtureJars.descriptor(
+                "BootstrapCaller",
+                "com.example.caller.CallerMain",
+                "26.3",
+                extraLines = listOf(
+                    "dependencies:",
+                    "  bootstrap:",
+                    "    LegacyTarget:",
+                    "      required: true",
+                ),
+            ),
+            descriptorEntry = "paper-plugin.yml",
+            generatedClasses = listOf("com/example/caller/CallerMain"),
+        )
+        val legacyTarget = FixtureJars.pluginJar(
+            jarName = "LegacyTarget",
+            descriptor = FixtureJars.descriptor(
+                "LegacyTarget",
+                "com.example.target.TargetMain",
+                "26.2",
+            ),
+            descriptorEntry = "plugin.yml",
+            generatedClasses = listOf("com/example/target/TargetMain"),
+        )
+        install(directory, bootstrapCaller, legacyTarget)
+        val report = audit(directory)
+        val finding = report.findings.firstOrNull { it.ruleId == "S005" }
+        assertTrue(finding != null) { "expected S005 in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.BLOCKER, finding!!.severity)
+        assertTrue(finding.location.contains("BootstrapCaller -> LegacyTarget")) { finding.location }
+    }
+
+    @Test
+    fun `multi-loader load-order conflict with startup plugin depending on postworld plugin reports S006 critical`(@TempDir directory: Path) {
+        val startupPlugin = FixtureJars.pluginJar(
+            jarName = "StartupPlugin",
+            descriptor = FixtureJars.descriptor(
+                "StartupPlugin",
+                "com.example.startup.StartupMain",
+                "26.3",
+                extraLines = listOf(
+                    "load: STARTUP",
+                    "dependencies:",
+                    "  server:",
+                    "    PostworldPlugin:",
+                    "      load: BEFORE",
+                ),
+            ),
+            descriptorEntry = "paper-plugin.yml",
+            generatedClasses = listOf("com/example/startup/StartupMain"),
+        )
+        val postworldPlugin = FixtureJars.pluginJar(
+            jarName = "PostworldPlugin",
+            descriptor = FixtureJars.descriptor(
+                "PostworldPlugin",
+                "com.example.postworld.PostworldMain",
+                "26.3",
+                extraLines = listOf(
+                    "load: POSTWORLD",
+                ),
+            ),
+            descriptorEntry = "paper-plugin.yml",
+            generatedClasses = listOf("com/example/postworld/PostworldMain"),
+        )
+        install(directory, startupPlugin, postworldPlugin)
+        val report = audit(directory)
+        val finding = report.findings.firstOrNull { it.ruleId == "S006" }
+        assertTrue(finding != null) { "expected S006 in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.WARNING, finding!!.severity)
+        assertTrue(finding.detail.contains("STARTUP") || finding.detail.contains("POSTWORLD")) { finding.detail }
+    }
+
+    @Test
+    fun `transitive API classloader exposure across isolated plugins reports S007 critical`(@TempDir directory: Path) {
+        val thirdBytes = run {
+            val cw = ClassWriter(0)
+            cw.visit(65, Opcodes.ACC_PUBLIC, "com/example/third/ThirdType", null, "java/lang/Object", null)
+            cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+                visitCode()
+                visitVarInsn(Opcodes.ALOAD, 0)
+                visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+                visitInsn(Opcodes.RETURN)
+                visitMaxs(1, 1)
+                visitEnd()
+            }
+            cw.visitEnd()
+            cw.toByteArray()
+        }
+        val bridgeBytes = run {
+            val cw = ClassWriter(0)
+            cw.visit(65, Opcodes.ACC_PUBLIC, "com/example/bridge/BridgeMain", null, "java/lang/Object", null)
+            cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+                visitCode()
+                visitVarInsn(Opcodes.ALOAD, 0)
+                visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+                visitInsn(Opcodes.RETURN)
+                visitMaxs(1, 1)
+                visitEnd()
+            }
+            cw.visitMethod(Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC, "getThird", "()Lcom/example/third/ThirdType;", null, null).apply {
+                visitCode()
+                visitInsn(Opcodes.ACONST_NULL)
+                visitInsn(Opcodes.ARETURN)
+                visitMaxs(1, 0)
+                visitEnd()
+            }
+            cw.visitEnd()
+            cw.toByteArray()
+        }
+        val callerBytes = run {
+            val cw = ClassWriter(0)
+            cw.visit(65, Opcodes.ACC_PUBLIC, "com/example/caller/CallerMain", null, "java/lang/Object", null)
+            cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+                visitCode()
+                visitVarInsn(Opcodes.ALOAD, 0)
+                visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+                visitInsn(Opcodes.RETURN)
+                visitMaxs(1, 1)
+                visitEnd()
+            }
+            cw.visitMethod(Opcodes.ACC_PUBLIC, "testCall", "()V", null, null).apply {
+                visitCode()
+                visitMethodInsn(Opcodes.INVOKESTATIC, "com/example/bridge/BridgeMain", "getThird", "()Lcom/example/third/ThirdType;", false)
+                visitInsn(Opcodes.POP)
+                visitInsn(Opcodes.RETURN)
+                visitMaxs(1, 1)
+                visitEnd()
+            }
+            cw.visitEnd()
+            cw.toByteArray()
+        }
+
+        val thirdJar = FixtureJars.pluginJar(
+            jarName = "ThirdPlugin",
+            descriptor = FixtureJars.descriptor("ThirdPlugin", "com.example.third.ThirdMain", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf("com/example/third/ThirdType.class" to thirdBytes),
+            generatedClasses = listOf("com/example/third/ThirdMain"),
+        )
+        val bridgeJar = FixtureJars.pluginJar(
+            jarName = "BridgePlugin",
+            descriptor = FixtureJars.descriptor("BridgePlugin", "com.example.bridge.BridgeMain", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf("com/example/bridge/BridgeMain.class" to bridgeBytes),
+        )
+        val callerJar = FixtureJars.pluginJar(
+            jarName = "CallerPlugin",
+            descriptor = FixtureJars.descriptor(
+                "CallerPlugin",
+                "com.example.caller.CallerMain",
+                "26.3",
+                extraLines = listOf(
+                    "dependencies:",
+                    "  server:",
+                    "    BridgePlugin:",
+                    "      join-classpath: true",
+                ),
+            ),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf("com/example/caller/CallerMain.class" to callerBytes),
+        )
+
+        install(directory, thirdJar, bridgeJar, callerJar)
+        val report = audit(directory)
+        val finding = report.findings.firstOrNull { it.ruleId == "S007" }
+        assertTrue(finding != null) { "expected S007 in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.CRITICAL, finding!!.severity)
+        assertTrue(finding.location.contains("CallerPlugin -> BridgePlugin -> ThirdPlugin")) { finding.location }
+    }
+
+    @Test
+    fun `cross-plugin ASM operand dataflow retaining foreign callback in static registry reports S070 critical`(@TempDir directory: Path) {
+        val targetBytes = run {
+            val cw = ClassWriter(0)
+            cw.visit(65, Opcodes.ACC_PUBLIC, "com/example/target/TargetService", null, "java/lang/Object", null)
+            cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+                visitCode()
+                visitVarInsn(Opcodes.ALOAD, 0)
+                visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+                visitInsn(Opcodes.RETURN)
+                visitMaxs(1, 1)
+                visitEnd()
+            }
+            cw.visitEnd()
+            cw.toByteArray()
+        }
+        val callerBytes = run {
+            val cw = ClassWriter(0)
+            val cls = "com/example/caller/CallerLeak"
+            cw.visit(65, Opcodes.ACC_PUBLIC, cls, null, "java/lang/Object", null)
+            cw.visitField(
+                Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC,
+                "FOREIGN_SERVICE",
+                "Lcom/example/target/TargetService;",
+                null,
+                null,
+            ).visitEnd()
+            cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+                visitCode()
+                visitVarInsn(Opcodes.ALOAD, 0)
+                visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+                visitInsn(Opcodes.RETURN)
+                visitMaxs(1, 1)
+                visitEnd()
+            }
+            cw.visitMethod(Opcodes.ACC_PUBLIC, "storeTarget", "(Lcom/example/target/TargetService;)V", null, null).apply {
+                visitCode()
+                visitVarInsn(Opcodes.ALOAD, 1)
+                visitFieldInsn(Opcodes.PUTSTATIC, cls, "FOREIGN_SERVICE", "Lcom/example/target/TargetService;")
+                visitInsn(Opcodes.RETURN)
+                visitMaxs(2, 2)
+                visitEnd()
+            }
+            cw.visitEnd()
+            cw.toByteArray()
+        }
+
+        val targetJar = FixtureJars.pluginJar(
+            jarName = "TargetPlugin",
+            descriptor = FixtureJars.descriptor("TargetPlugin", "com.example.target.TargetMain", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf("com/example/target/TargetService.class" to targetBytes),
+            generatedClasses = listOf("com/example/target/TargetMain"),
+        )
+        val callerJar = FixtureJars.pluginJar(
+            jarName = "CallerPlugin",
+            descriptor = FixtureJars.descriptor(
+                "CallerPlugin",
+                "com.example.caller.CallerLeak",
+                "26.3",
+                extraLines = listOf(
+                    "dependencies:",
+                    "  server:",
+                    "    TargetPlugin:",
+                    "      join-classpath: true",
+                ),
+            ),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf("com/example/caller/CallerLeak.class" to callerBytes),
+        )
+
+        install(directory, targetJar, callerJar)
+        val report = audit(directory)
+        val finding = report.findings.firstOrNull { it.ruleId == "S070" }
+        assertTrue(finding != null) { "expected S070 in ${report.findings.map { it.ruleId }}" }
+        assertTrue(finding!!.location.contains("CallerPlugin -> TargetPlugin")) { finding.location }
     }
 }

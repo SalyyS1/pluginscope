@@ -20,7 +20,19 @@ Four commands, four questions:
 
 `pluginscope mcp` also serves all analyses over the Model Context Protocol on `stdio` so coding agents can audit plugin artifacts directly.
 
-## What is new in v0.4.0
+## What is new in v0.5.0
+
+- Cross-plugin ASM dataflow leak analysis (`J074`, `S070`):
+  - `J074`: Single-JAR cross-plugin hook and pipeline leak audit catching `PlaceholderExpansion#register()` without `unregister()` in `onDisable`, Netty `ChannelPipeline#addBefore/addAfter/addFirst/addLast` injections without `remove` or `replace` in `onDisable`, and `ServicesManager#load` / `getRegistration` / `PluginManager#getPlugin` return values retained in `static` fields or collections without cleanup in `onDisable` or `PluginDisableEvent` / `ServiceUnregisterEvent`.
+  - `S070`: Multi-JAR inter-plugin ASM operand-stack dataflow across `plugins/` sets. Identifies static registry sink methods in target plugins (where formal parameters flow into `PUTSTATIC` or static collection `add`/`put`) and flags caller plugins passing own instances or `invokedynamic` lambdas without invoking cleanup in `onDisable`, plus direct cross-plugin `static` field/collection retention of foreign plugin classes.
+- `paper-plugin.yml` multi-loader dependency graph and transitive classloader exposure (`J043`, `S005`, `S006`, `S007`):
+  - `J043`: Validates `paper-plugin.yml` dependency option schemas (`load: BEFORE|AFTER|OMIT`, boolean `required` and `join-classpath`), top-level `load: STARTUP|POSTWORLD`, colliding `main`/`bootstrapper`/`loader` entrypoints, contradictory `bootstrap` vs `server` `BEFORE`/`AFTER` edges, and dual-descriptor `plugin.yml` vs `paper-plugin.yml` opposite load directions.
+  - `S005`: Flags `dependencies.bootstrap` entries in `paper-plugin.yml` targeting installed legacy `plugin.yml` plugins (absent from Paper's bootstrap provider storage).
+  - `S006`: Detects topological load-order cycles across `paper-plugin.yml` (`bootstrap` and `server` `BEFORE`/`AFTER`) and `plugin.yml` (`depend`, `softdepend`, `loadbefore`, `provides`), plus `STARTUP` plugins depending on `POSTWORLD` plugins.
+  - `S007`: Detects non-transitive `PaperPluginClassLoader` API exposure when Plugin A joins Plugin B's classpath and calls a method, field, or supertype on Plugin B that exposes types owned by an isolated third Plugin C.
+- Zero-backend browser inspector upgrade (`docs/index.html`): Client-side detection for `J043`, `J074`, `S005`, `S006`, `S007`, and `S070` with a new interactive multi-JAR cross-plugin leak and multi-loader dependency graph binary demo.
+
+## Previous highlights in v0.4.0
 
 - ASM bytecode dataflow and `onDisable` call-graph leak analysis (`J070` - `J073`):
   - `J070`: Tracks `BukkitTask` and Folia `ScheduledTask` handles across operand stacks and local variables, flagging repeating tasks discarded via `POP` in dynamic code paths or accumulated in `static` fields and collections without cancellation and clearing in `onDisable` (suppressing self-cancelling `BukkitRunnable` subclasses and helper/lambda shutdown chains).
@@ -47,37 +59,37 @@ Java 21 or newer. The release JAR is self-contained.
 
 ## Install
 
-Download `pluginscope-0.4.0.jar` from [GitHub Releases](https://github.com/SalyyS1/pluginscope/releases) and run:
+Download `pluginscope-0.5.0.jar` from [GitHub Releases](https://github.com/SalyyS1/pluginscope/releases) and run:
 
 ```bash
-java -jar pluginscope-0.4.0.jar --help
+java -jar pluginscope-0.5.0.jar --help
 ```
 
 ## Quick start
 
 ```bash
 # Audit one plugin JAR against a target Minecraft server version
-java -jar pluginscope-0.4.0.jar jar MyPlugin.jar --target 26.3
+java -jar pluginscope-0.5.0.jar jar MyPlugin.jar --target 26.3
 
 # Check API compatibility against Paper 1.21.4 (downloads and caches paper-api once)
-java -jar pluginscope-0.4.0.jar compat MyPlugin.jar --mc 1.21.4
+java -jar pluginscope-0.5.0.jar compat MyPlugin.jar --mc 1.21.4
 
 # Audit an entire server plugins/ folder for classloader blocks and shading collisions
-java -jar pluginscope-0.4.0.jar stack /srv/mc/plugins
+java -jar pluginscope-0.5.0.jar stack /srv/mc/plugins
 
 # Emit console output AND write OASIS SARIF v2.1.0 in a single run
-java -jar pluginscope-0.4.0.jar stack /srv/mc/plugins --sarif pluginscope.sarif
+java -jar pluginscope-0.5.0.jar stack /srv/mc/plugins --sarif pluginscope.sarif
 
 # Validate a resource pack directory or zip
-java -jar pluginscope-0.4.0.jar pack pack.zip --mc 26.3
+java -jar pluginscope-0.5.0.jar pack pack.zip --mc 26.3
 
 # Print all rules with rationale, remediation, and primary source provenance
-java -jar pluginscope-0.4.0.jar rules
+java -jar pluginscope-0.5.0.jar rules
 ```
 
 ## GitHub Actions & Code Scanning (SARIF v2.1.0)
 
-Use the composite action `SalyyS1/pluginscope@v0.4.0` to gate pull requests and publish shading, packaging, and Paper classloader findings directly to the GitHub **Security -> Code scanning** tab:
+Use the composite action `SalyyS1/pluginscope@v0.5.0` to gate pull requests and publish shading, packaging, and Paper classloader findings directly to the GitHub **Security -> Code scanning** tab:
 
 ```yaml
 name: Plugin Audit
@@ -101,7 +113,7 @@ jobs:
         run: ./gradlew build --no-daemon
 
       - name: Run PluginScope static audit
-        uses: SalyyS1/pluginscope@v0.4.0
+        uses: SalyyS1/pluginscope@v0.5.0
         with:
           command: jar
           path: build/libs
@@ -207,7 +219,7 @@ plugins directory: /srv/mc/plugins
   "mcpServers": {
     "pluginscope": {
       "command": "java",
-      "args": ["-jar", "/absolute/path/to/pluginscope-0.4.0.jar", "mcp"]
+      "args": ["-jar", "/absolute/path/to/pluginscope-0.5.0.jar", "mcp"]
     }
   }
 }
@@ -231,7 +243,7 @@ Exposed read-only tools: `scan_jar`, `check_api_compat`, `audit_plugins_dir`, `v
 ./gradlew test shadowJar --no-daemon
 ```
 
-Produces `build/libs/pluginscope-0.4.0.jar` (self-contained shaded CLI) and runs the full JUnit 6 suite against compiled bytecode fixtures.
+Produces `build/libs/pluginscope-0.5.0.jar` (self-contained shaded CLI) and runs the full JUnit 6 suite against compiled bytecode fixtures.
 
 ## Licence
 

@@ -15,6 +15,7 @@ import org.objectweb.asm.ClassWriter
 import org.objectweb.asm.Handle
 import org.objectweb.asm.Label
 import org.objectweb.asm.Opcodes
+import org.objectweb.asm.Type
 import java.nio.file.Path
 
 class LifecycleAuditTest {
@@ -466,5 +467,143 @@ class LifecycleAuditTest {
         val j073 = report.findings.filter { it.ruleId == "J073" }
         assertEquals(2, j073.size) { "Expected 2 J073 findings (shutdown hook + ThreadLocal): $j073" }
         assertTrue(j073.all { it.severity == Severity.CRITICAL })
+    }
+
+    @Test
+    fun `PlaceholderExpansion registered without unregister in onDisable reports J074 critical`() {
+        val cw = ClassWriter(0)
+        val cls = "com/acme/leak/PapiLeakPlugin"
+        cw.visit(65, Opcodes.ACC_PUBLIC, cls, null, "java/lang/Object", null)
+        cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+            visitCode()
+            visitVarInsn(Opcodes.ALOAD, 0)
+            visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+            visitInsn(Opcodes.RETURN)
+            visitMaxs(1, 1)
+            visitEnd()
+        }
+        cw.visitMethod(Opcodes.ACC_PUBLIC, "onEnable", "()V", null, null).apply {
+            visitCode()
+            val l0 = Label()
+            visitLabel(l0)
+            visitLineNumber(25, l0)
+            visitTypeInsn(Opcodes.NEW, "me/clip/placeholderapi/expansion/PlaceholderExpansion")
+            visitInsn(Opcodes.DUP)
+            visitMethodInsn(Opcodes.INVOKESPECIAL, "me/clip/placeholderapi/expansion/PlaceholderExpansion", "<init>", "()V", false)
+            visitMethodInsn(
+                Opcodes.INVOKEVIRTUAL,
+                "me/clip/placeholderapi/expansion/PlaceholderExpansion",
+                "register",
+                "()Z",
+                false,
+            )
+            visitInsn(Opcodes.POP)
+            visitInsn(Opcodes.RETURN)
+            visitMaxs(2, 1)
+            visitEnd()
+        }
+        cw.visitEnd()
+
+        val jar = buildJarWithClasses("PapiLeak", cls.replace('/', '.'), mapOf(cls to cw.toByteArray()))
+        val report = audit(jar)
+        val hit = report.findings.firstOrNull { it.ruleId == "J074" }
+        assertTrue(hit != null) { "Expected J074 in ${report.findings}" }
+        assertEquals(Severity.CRITICAL, hit!!.severity)
+        assertTrue(hit.detail.contains("PlaceholderExpansion#register()")) { hit.detail }
+    }
+
+    @Test
+    fun `Netty ChannelPipeline injection without remove in onDisable reports J074 critical`() {
+        val cw = ClassWriter(0)
+        val cls = "com/acme/leak/NettyLeakPlugin"
+        cw.visit(65, Opcodes.ACC_PUBLIC, cls, null, "java/lang/Object", null)
+        cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+            visitCode()
+            visitVarInsn(Opcodes.ALOAD, 0)
+            visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+            visitInsn(Opcodes.RETURN)
+            visitMaxs(1, 1)
+            visitEnd()
+        }
+        cw.visitMethod(Opcodes.ACC_PUBLIC, "injectPipeline", "(Lio/netty/channel/ChannelPipeline;)V", null, null).apply {
+            visitCode()
+            val l0 = Label()
+            visitLabel(l0)
+            visitLineNumber(33, l0)
+            visitVarInsn(Opcodes.ALOAD, 1)
+            visitLdcInsn("decoder")
+            visitLdcInsn("my_handler")
+            visitInsn(Opcodes.ACONST_NULL)
+            visitMethodInsn(
+                Opcodes.INVOKEINTERFACE,
+                "io/netty/channel/ChannelPipeline",
+                "addBefore",
+                "(Ljava/lang/String;Ljava/lang/String;Lio/netty/channel/ChannelHandler;)Lio/netty/channel/ChannelPipeline;",
+                true,
+            )
+            visitInsn(Opcodes.POP)
+            visitInsn(Opcodes.RETURN)
+            visitMaxs(4, 2)
+            visitEnd()
+        }
+        cw.visitEnd()
+
+        val jar = buildJarWithClasses("NettyLeak", cls.replace('/', '.'), mapOf(cls to cw.toByteArray()))
+        val report = audit(jar)
+        val hit = report.findings.firstOrNull { it.ruleId == "J074" }
+        assertTrue(hit != null) { "Expected J074 in ${report.findings}" }
+        assertEquals(Severity.CRITICAL, hit!!.severity)
+        assertTrue(hit.detail.contains("Netty ChannelPipeline handler")) { hit.detail }
+    }
+
+    @Test
+    fun `foreign ServicesManager provider retained in static collection without cleanup reports J074`() {
+        val cw = ClassWriter(0)
+        val cls = "com/acme/leak/ServicesLeakPlugin"
+        cw.visit(65, Opcodes.ACC_PUBLIC, cls, null, "java/lang/Object", null)
+        cw.visitField(
+            Opcodes.ACC_PRIVATE or Opcodes.ACC_STATIC or Opcodes.ACC_FINAL,
+            "PROVIDERS",
+            "Ljava/util/List;",
+            null,
+            null,
+        ).visitEnd()
+        cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+            visitCode()
+            visitVarInsn(Opcodes.ALOAD, 0)
+            visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+            visitInsn(Opcodes.RETURN)
+            visitMaxs(1, 1)
+            visitEnd()
+        }
+        cw.visitMethod(Opcodes.ACC_PUBLIC, "cacheProvider", "(Lorg/bukkit/plugin/ServicesManager;)V", null, null).apply {
+            visitCode()
+            val l0 = Label()
+            visitLabel(l0)
+            visitLineNumber(40, l0)
+            visitFieldInsn(Opcodes.GETSTATIC, cls, "PROVIDERS", "Ljava/util/List;")
+            visitVarInsn(Opcodes.ALOAD, 1)
+            visitLdcInsn(Type.getType("Ljava/lang/Object;"))
+            visitMethodInsn(
+                Opcodes.INVOKEINTERFACE,
+                "org/bukkit/plugin/ServicesManager",
+                "load",
+                "(Ljava/lang/Class;)Ljava/lang/Object;",
+                true,
+            )
+            visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/util/List", "add", "(Ljava/lang/Object;)Z", true)
+            visitInsn(Opcodes.POP)
+            visitInsn(Opcodes.RETURN)
+            visitMaxs(3, 2)
+            visitEnd()
+        }
+        cw.visitEnd()
+
+        val jar = buildJarWithClasses("ServicesLeak", cls.replace('/', '.'), mapOf(cls to cw.toByteArray()))
+        val report = audit(jar)
+        val hit = report.findings.firstOrNull { it.ruleId == "J074" }
+        assertTrue(hit != null) { "Expected J074 in ${report.findings}" }
+        assertEquals(Severity.CRITICAL, hit!!.severity)
+        assertTrue(hit.detail.contains("ServicesManager")) { hit.detail }
     }
 }

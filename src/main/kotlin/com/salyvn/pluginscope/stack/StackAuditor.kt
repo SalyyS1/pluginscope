@@ -7,8 +7,10 @@ import com.salyvn.pluginscope.core.JarInspection
 import com.salyvn.pluginscope.core.JarReader
 import com.salyvn.pluginscope.core.ScanReport
 import com.salyvn.pluginscope.core.Severity
+import com.salyvn.pluginscope.core.UseKind
 import com.salyvn.pluginscope.data.JavaRuntimes
 import com.salyvn.pluginscope.data.ServerRuntime
+import org.objectweb.asm.Type
 import java.nio.file.Path
 
 /**
@@ -42,11 +44,16 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
         val knownNames = plugins.flatMap { listOf(it.name) + it.provides }.map { it.lowercase() }.toSet()
 
         checkIdentity(plugins, sink)
-        checkDependencies(plugins, knownNames, sink)
+        val hardCycleSets = checkDependencies(plugins, knownNames, sink)
+        checkMultiLoaderDependencyGraph(plugins, hardCycleSets, sink)
         checkClassloaderIsolation(plugins, sink)
         checkCommands(plugins, sink)
         checkSharedLibraries(plugins, sink)
         val (serviceConflicts, eventConflicts) = checkServiceAndEventConflicts(plugins, sink)
+        val crossPluginLeaks = CrossPluginDataflowChecks.run(
+            plugins.map { CrossPluginDataflowChecks.PluginUnit(it.path, it.jar, it.name) },
+            sink,
+        )
         checkRuntime(inspections, plugins, sink)
 
         return ScanReport(
@@ -70,6 +77,7 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
                 put("target", if (foliaTarget) "Folia" else "Paper")
                 put("service conflicts", "$serviceConflicts conflict(s) across audited service providers")
                 put("event handler conflicts", "$eventConflicts conflict(s) across audited custom event classes")
+                put("cross-plugin leaks", "$crossPluginLeaks leak path(s) across installed plugin classloaders")
                 for (plugin in plugins.sortedBy { it.name.lowercase() }) {
                     val jar = plugin.jar
                     val descriptor = jar.descriptor
@@ -123,7 +131,11 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
         }
     }
 
-    private fun checkDependencies(plugins: List<Installed>, knownNames: Set<String>, sink: FindingSink) {
+    private fun checkDependencies(
+        plugins: List<Installed>,
+        knownNames: Set<String>,
+        sink: FindingSink,
+    ): Set<Set<String>> {
         for (plugin in plugins) {
             val descriptor = plugin.jar.descriptor ?: continue
             for (dependency in descriptor.dependencies) {
@@ -153,12 +165,216 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
                 }
             }
         }
-        findCycles(plugins).forEach { cycle ->
+        val hardCycles = findCycles(plugins)
+        hardCycles.forEach { cycle ->
             sink.add(
                 StackRules.DEPENDENCY_CYCLE,
                 location = cycle.joinToString(" -> "),
                 detail = "These plugins require each other, so the loader cannot order them.",
             )
+        }
+        return hardCycles.map { cycle -> cycle.map { it.lowercase() }.toSet() }.toSet()
+    }
+
+    /**
+     * Validates Paper's multi-loader bootstrap and server topological load-order graphs across
+     * `paper-plugin.yml` (`BEFORE` / `AFTER` / `OMIT`) and `plugin.yml` (`depend`, `softdepend`,
+     * `loadbefore`, `provides`), plus `STARTUP` vs `POSTWORLD` stage inversions (`S005`, `S006`).
+     */
+    private fun checkMultiLoaderDependencyGraph(
+        plugins: List<Installed>,
+        hardCycleSets: Set<Set<String>>,
+        sink: FindingSink,
+    ) {
+        if (plugins.size < 2) return
+
+        val byCanonicalName = LinkedHashMap<String, Installed>()
+        for (plugin in plugins) {
+            byCanonicalName[plugin.name.lowercase()] = plugin
+            for (provided in plugin.provides) {
+                byCanonicalName.putIfAbsent(provided.lowercase(), plugin)
+            }
+        }
+
+        data class OrderEdge(
+            val earlier: Installed,
+            val later: Installed,
+            val provenance: String,
+        )
+
+        val bootstrapEdges = mutableListOf<OrderEdge>()
+        val serverEdges = mutableListOf<OrderEdge>()
+
+        for (plugin in plugins) {
+            val desc = plugin.jar.descriptor ?: continue
+            if (desc.kind == DescriptorKind.PAPER) {
+                for (dep in desc.dependencies) {
+                    val target = byCanonicalName[dep.name.lowercase()] ?: continue
+                    if (target.name.equals(plugin.name, ignoreCase = true)) continue
+
+                    if (dep.phase == "bootstrap") {
+                        val targetDesc = target.jar.descriptor
+                        if (targetDesc?.kind == DescriptorKind.LEGACY) {
+                            sink.add(
+                                StackRules.PAPER_BOOTSTRAP_TARGETS_LEGACY_PLUGIN,
+                                location = "${plugin.name} -> ${target.name}",
+                                detail = "Paper plugin ${plugin.name} declares ${if (dep.required) "required" else "optional"} " +
+                                    "dependencies.bootstrap.${dep.name}, which resolves to legacy plugin.yml plugin " +
+                                    "${target.name} (absent from Paper's bootstrap provider storage).",
+                                evidence = listOf(
+                                    "${plugin.jar.fileName} (dependencies.bootstrap.${dep.name}, required=${dep.required}) -> " +
+                                        "${target.jar.fileName} (plugin.yml)",
+                                ),
+                                severityOverride = if (dep.required) Severity.BLOCKER else Severity.WARNING,
+                            )
+                            continue
+                        }
+                        when (dep.load) {
+                            "BEFORE" -> bootstrapEdges += OrderEdge(
+                                earlier = target,
+                                later = plugin,
+                                provenance = "${plugin.name}: paper-plugin.yml bootstrap.${dep.name}.load=BEFORE",
+                            )
+                            "AFTER" -> bootstrapEdges += OrderEdge(
+                                earlier = plugin,
+                                later = target,
+                                provenance = "${plugin.name}: paper-plugin.yml bootstrap.${dep.name}.load=AFTER",
+                            )
+                        }
+                    } else if (dep.phase == null || dep.phase == "server") {
+                        when (dep.load) {
+                            "BEFORE" -> serverEdges += OrderEdge(
+                                earlier = target,
+                                later = plugin,
+                                provenance = "${plugin.name}: paper-plugin.yml server.${dep.name}.load=BEFORE",
+                            )
+                            "AFTER" -> serverEdges += OrderEdge(
+                                earlier = plugin,
+                                later = target,
+                                provenance = "${plugin.name}: paper-plugin.yml server.${dep.name}.load=AFTER",
+                            )
+                        }
+                    }
+                }
+            } else {
+                for (dep in desc.dependencies) {
+                    val target = byCanonicalName[dep.name.lowercase()] ?: continue
+                    if (target.name.equals(plugin.name, ignoreCase = true)) continue
+                    val keyLabel = if (dep.required) "depend" else "softdepend"
+                    serverEdges += OrderEdge(
+                        earlier = target,
+                        later = plugin,
+                        provenance = "${plugin.name}: plugin.yml $keyLabel includes ${dep.name}",
+                    )
+                }
+                for (lb in desc.loadBefore) {
+                    val target = byCanonicalName[lb.lowercase()] ?: continue
+                    if (target.name.equals(plugin.name, ignoreCase = true)) continue
+                    serverEdges += OrderEdge(
+                        earlier = plugin,
+                        later = target,
+                        provenance = "${plugin.name}: plugin.yml loadbefore includes $lb",
+                    )
+                }
+            }
+        }
+
+        fun findOrderCycles(edges: List<OrderEdge>): List<Pair<List<String>, List<String>>> {
+            if (edges.isEmpty()) return emptyList()
+            val byKey = plugins.associateBy { it.name.lowercase() }
+            val adj = LinkedHashMap<String, MutableList<OrderEdge>>()
+            for (edge in edges) {
+                adj.getOrPut(edge.earlier.name.lowercase()) { mutableListOf() } += edge
+            }
+            val found = mutableListOf<Pair<List<String>, List<String>>>()
+            val state = HashMap<String, Int>()
+            val stack = ArrayDeque<String>()
+
+            fun dfs(node: String) {
+                state[node] = 1
+                stack.addLast(node)
+                for (edge in adj[node].orEmpty()) {
+                    val next = edge.later.name.lowercase()
+                    when (state[next] ?: 0) {
+                        0 -> dfs(next)
+                        1 -> {
+                            val idx = stack.indexOf(next)
+                            val ringKeys = stack.toList().drop(idx)
+                            val keySet = ringKeys.toSet()
+                            if (found.none { it.first.dropLast(1).map { n -> n.lowercase() }.toSet() == keySet }) {
+                                val displayRing = ringKeys.map { byKey[it]!!.name } + byKey[next]!!.name
+                                val reasons = mutableListOf<String>()
+                                for (i in ringKeys.indices) {
+                                    val u = ringKeys[i]
+                                    val v = ringKeys[(i + 1) % ringKeys.size]
+                                    adj[u].orEmpty()
+                                        .filter { it.later.name.lowercase() == v }
+                                        .forEach { reasons += it.provenance }
+                                }
+                                found += displayRing to reasons.distinct()
+                            }
+                        }
+                    }
+                }
+                stack.removeLast()
+                state[node] = 2
+            }
+
+            for (key in adj.keys) {
+                if ((state[key] ?: 0) == 0) dfs(key)
+            }
+            return found
+        }
+
+        for ((cycle, reasons) in findOrderCycles(bootstrapEdges)) {
+            sink.add(
+                StackRules.MULTI_LOADER_LOAD_ORDER_CONFLICT,
+                location = "bootstrap: ${cycle.joinToString(" -> ")}",
+                detail = "Paper dependencies.bootstrap BEFORE/AFTER edges form a topological cycle, " +
+                    "so bootstrapper initialization order cannot be resolved.",
+                evidence = reasons,
+                severityOverride = Severity.BLOCKER,
+            )
+        }
+
+        val reportedCycleNodeSets = HashSet<Set<String>>(hardCycleSets)
+        for ((cycle, reasons) in findOrderCycles(serverEdges)) {
+            val nodeSet = cycle.dropLast(1).map { it.lowercase() }.toSet()
+            if (!reportedCycleNodeSets.add(nodeSet)) continue
+            sink.add(
+                StackRules.MULTI_LOADER_LOAD_ORDER_CONFLICT,
+                location = cycle.joinToString(" -> "),
+                detail = "Multi-loader server load-order edges (BEFORE, AFTER, depend, softdepend, loadbefore) " +
+                    "form a cycle that Paper's dependency tree cannot order deterministically.",
+                evidence = reasons,
+            )
+        }
+
+        val stagePairsReported = HashSet<Pair<String, String>>()
+        for (edge in serverEdges) {
+            val earlierStage = edge.earlier.jar.descriptor?.load?.uppercase() ?: "POSTWORLD"
+            val laterStage = edge.later.jar.descriptor?.load?.uppercase() ?: "POSTWORLD"
+            if (laterStage == "STARTUP" && earlierStage == "POSTWORLD") {
+                val pairKey = edge.earlier.name.lowercase() to edge.later.name.lowercase()
+                if (pairKey.toList().toSet() in reportedCycleNodeSets) continue
+                if (stagePairsReported.add(pairKey)) {
+                    val allReasons = serverEdges
+                        .filter {
+                            it.earlier.name.equals(edge.earlier.name, ignoreCase = true) &&
+                                it.later.name.equals(edge.later.name, ignoreCase = true)
+                        }
+                        .map { it.provenance }
+                        .distinct()
+                    sink.add(
+                        StackRules.MULTI_LOADER_LOAD_ORDER_CONFLICT,
+                        location = "${edge.later.name} (STARTUP) <- ${edge.earlier.name} (POSTWORLD)",
+                        detail = "${edge.later.name} declares load: STARTUP (enabled before worlds load) while " +
+                            "topological load order places POSTWORLD plugin ${edge.earlier.name} before it.",
+                        evidence = allReasons,
+                        severityOverride = Severity.WARNING,
+                    )
+                }
+            }
         }
     }
 
@@ -192,6 +408,42 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
 
         val blockedPairsReported = mutableSetOf<Pair<String, String>>()
 
+        fun hasRuntimeClassAccess(caller: Installed, target: Installed): Boolean {
+            val callerDesc = caller.jar.descriptor ?: return false
+            val targetDesc = target.jar.descriptor
+            val targetNames = (listOf(target.name) + target.provides).map { it.lowercase() }.toSet()
+            return if (callerDesc.kind == DescriptorKind.PAPER) {
+                callerDesc.dependencies.any { dep ->
+                    dep.name.lowercase() in targetNames &&
+                        (dep.phase == null || dep.phase == "server") &&
+                        dep.joinClasspath != false
+                }
+            } else {
+                !(targetDesc?.kind == DescriptorKind.PAPER && targetDesc.hasOpenClassloader == false)
+            }
+        }
+
+        fun extractReferencedInternalTypes(kind: UseKind, descriptor: String): List<String> {
+            if (descriptor.isEmpty()) return emptyList()
+            val types = mutableListOf<Type>()
+            try {
+                when (kind) {
+                    UseKind.METHOD -> {
+                        types.addAll(Type.getArgumentTypes(descriptor))
+                        types.add(Type.getReturnType(descriptor))
+                    }
+                    UseKind.FIELD -> types.add(Type.getType(descriptor))
+                    UseKind.TYPE -> Unit
+                }
+            } catch (_: Exception) {
+                return emptyList()
+            }
+            return types.mapNotNull { raw ->
+                val unwrapped = if (raw.sort == Type.ARRAY) raw.elementType else raw
+                if (unwrapped.sort == Type.OBJECT) unwrapped.internalName else null
+            }
+        }
+
         // Descriptor-level check: legacy plugin.yml depending on a paper-plugin.yml with has-open-classloader: false.
         for (plugin in plugins) {
             val desc = plugin.jar.descriptor ?: continue
@@ -221,6 +473,29 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
             val desc = plugin.jar.descriptor ?: continue
             val withUses = JarReader.read(plugin.path) { owner -> owner in uniqueOwnClasses }
             val crossRefsByTarget = linkedMapOf<Installed, MutableList<String>>()
+            // Track (intermediate B, third C) -> (exposed C types, sample evidence lines) for S007
+            val transitiveExposures = linkedMapOf<Pair<Installed, Installed>, Pair<MutableSet<String>, MutableList<String>>>()
+
+            fun recordTransitiveIfBlocked(
+                intermediate: Installed,
+                candidateType: String,
+                evidenceLine: String,
+            ) {
+                val third = uniqueOwnClasses[candidateType] ?: return
+                if (third.name.equals(plugin.name, ignoreCase = true) ||
+                    third.name.equals(intermediate.name, ignoreCase = true)
+                ) {
+                    return
+                }
+                if (!hasRuntimeClassAccess(plugin, intermediate)) return
+                if (hasRuntimeClassAccess(plugin, third)) return
+
+                val bucket = transitiveExposures.getOrPut(intermediate to third) {
+                    linkedSetOf<String>() to mutableListOf<String>()
+                }
+                bucket.first += candidateType.replace('/', '.')
+                bucket.second += evidenceLine
+            }
 
             for (entry in withUses.classes) {
                 if (!plugin.jar.isOwnCode(entry.internalName)) continue
@@ -228,15 +503,31 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
                 entry.superName?.let { sup ->
                     val ownerPlugin = uniqueOwnClasses[sup]
                     if (ownerPlugin != null && !ownerPlugin.name.equals(plugin.name, ignoreCase = true)) {
-                        crossRefsByTarget.getOrPut(ownerPlugin) { mutableListOf() } +=
-                            "$fromDotted extends ${sup.replace('/', '.')}"
+                        val ev = "$fromDotted extends ${sup.replace('/', '.')}"
+                        crossRefsByTarget.getOrPut(ownerPlugin) { mutableListOf() } += ev
+                        ownerPlugin.jar.classAt(sup)?.let { targetCls ->
+                            targetCls.superName?.let { s2 ->
+                                recordTransitiveIfBlocked(ownerPlugin, s2, "$ev (supertype ${s2.replace('/', '.')})")
+                            }
+                            for (i2 in targetCls.interfaces) {
+                                recordTransitiveIfBlocked(ownerPlugin, i2, "$ev (interface ${i2.replace('/', '.')})")
+                            }
+                        }
                     }
                 }
                 for (iface in entry.interfaces) {
                     val ownerPlugin = uniqueOwnClasses[iface]
                     if (ownerPlugin != null && !ownerPlugin.name.equals(plugin.name, ignoreCase = true)) {
-                        crossRefsByTarget.getOrPut(ownerPlugin) { mutableListOf() } +=
-                            "$fromDotted implements ${iface.replace('/', '.')}"
+                        val ev = "$fromDotted implements ${iface.replace('/', '.')}"
+                        crossRefsByTarget.getOrPut(ownerPlugin) { mutableListOf() } += ev
+                        ownerPlugin.jar.classAt(iface)?.let { targetCls ->
+                            targetCls.superName?.let { s2 ->
+                                recordTransitiveIfBlocked(ownerPlugin, s2, "$ev (supertype ${s2.replace('/', '.')})")
+                            }
+                            for (i2 in targetCls.interfaces) {
+                                recordTransitiveIfBlocked(ownerPlugin, i2, "$ev (interface ${i2.replace('/', '.')})")
+                            }
+                        }
                     }
                 }
             }
@@ -246,8 +537,28 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
                 val ownerPlugin = uniqueOwnClasses[use.owner] ?: continue
                 if (ownerPlugin.name.equals(plugin.name, ignoreCase = true)) continue
                 val lineSuffix = use.line?.let { ":$it" } ?: ""
-                crossRefsByTarget.getOrPut(ownerPlugin) { mutableListOf() } +=
-                    "${use.fromClass.replace('/', '.')}#${use.fromMethod.substringBefore('(')}$lineSuffix -> ${use.render()}"
+                val ev = "${use.fromClass.replace('/', '.')}#${use.fromMethod.substringBefore('(')}$lineSuffix -> ${use.render()}"
+                crossRefsByTarget.getOrPut(ownerPlugin) { mutableListOf() } += ev
+
+                for (sigType in extractReferencedInternalTypes(use.kind, use.descriptor)) {
+                    recordTransitiveIfBlocked(ownerPlugin, sigType, ev)
+                }
+                ownerPlugin.jar.classAt(use.owner)?.let { targetCls ->
+                    targetCls.superName?.let { s2 ->
+                        recordTransitiveIfBlocked(
+                            ownerPlugin,
+                            s2,
+                            "$ev (${use.owner.replace('/', '.')} extends ${s2.replace('/', '.')})",
+                        )
+                    }
+                    for (i2 in targetCls.interfaces) {
+                        recordTransitiveIfBlocked(
+                            ownerPlugin,
+                            i2,
+                            "$ev (${use.owner.replace('/', '.')} implements ${i2.replace('/', '.')})",
+                        )
+                    }
+                }
             }
 
             for ((target, refs) in crossRefsByTarget) {
@@ -312,16 +623,44 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
                     }
                 }
             }
+
+            for ((pair, data) in transitiveExposures) {
+                val (intermediate, third) = pair
+                val exposedTypes = data.first.take(3).joinToString(", ")
+                sink.add(
+                    StackRules.TRANSITIVE_API_CLASSLOADER_EXPOSURE,
+                    location = "${plugin.name} -> ${intermediate.name} -> ${third.name}",
+                    detail = "${plugin.name} joins ${intermediate.name}'s classpath and accesses an API exposing " +
+                        "${third.name} type(s) ($exposedTypes), but ${plugin.name}'s classloader cannot access ${third.name}.",
+                    evidence = data.second.distinct().take(4),
+                )
+            }
         }
     }
 
-    /** Depth-first search over hard dependencies, reporting each cycle once. */
+    /** Depth-first search over hard BEFORE dependencies (legacy depend + Paper server required BEFORE), reporting each cycle once. */
     private fun findCycles(plugins: List<Installed>): List<List<String>> {
+        val byCanonical = LinkedHashMap<String, Installed>()
+        for (plugin in plugins) {
+            byCanonical[plugin.name.lowercase()] = plugin
+            for (provided in plugin.provides) {
+                byCanonical.putIfAbsent(provided.lowercase(), plugin)
+            }
+        }
         val byName = plugins.associateBy { it.name.lowercase() }
         val edges = plugins.associate { plugin ->
-            plugin.name.lowercase() to plugin.jar.descriptor!!.hardDependencies
-                .map { it.lowercase() }
-                .filter { it in byName }
+            val desc = plugin.jar.descriptor!!
+            val hardTargets = if (desc.kind == DescriptorKind.LEGACY) {
+                desc.dependencies.filter { it.required }.map { it.name }
+            } else {
+                desc.dependencies
+                    .filter { it.required && (it.phase == null || it.phase == "server") && it.load == "BEFORE" }
+                    .map { it.name }
+            }
+            plugin.name.lowercase() to hardTargets
+                .mapNotNull { byCanonical[it.lowercase()]?.name?.lowercase() }
+                .filter { it != plugin.name.lowercase() }
+                .distinct()
         }
         val cycles = mutableListOf<List<String>>()
         val state = mutableMapOf<String, Int>() // 0 = unvisited, 1 = on stack, 2 = done

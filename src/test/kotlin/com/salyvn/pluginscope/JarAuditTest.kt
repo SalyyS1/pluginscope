@@ -275,4 +275,115 @@ class JarAuditTest {
         assertEquals(Severity.CRITICAL, finding!!.severity)
         assertTrue(finding.detail.contains("Mojang-mapped")) { finding.detail }
     }
+
+    @Test
+    fun `paper-plugin yml with colliding entrypoints reports J043 critical`() {
+        val paperYml = FixtureJars.descriptor(
+            "CollidingEntrypoints",
+            "fixtures.clean.CleanPlugin",
+            "26.3",
+            extraLines = listOf(
+                "bootstrapper: fixtures.clean.CleanPlugin",
+            ),
+        )
+        val jar = FixtureJars.pluginJar(
+            jarName = "colliding-entrypoints",
+            descriptor = paperYml,
+            descriptorEntry = "paper-plugin.yml",
+            packagePaths = listOf("fixtures/clean/"),
+        )
+        val report = audit(jar)
+        val finding = report.findings.firstOrNull { it.ruleId == "J043" }
+        assertTrue(finding != null) { "expected J043 in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.CRITICAL, finding!!.severity)
+        assertTrue(finding.detail.contains("Entrypoint classes collide")) { finding.detail }
+    }
+
+    @Test
+    fun `paper-plugin yml with invalid dependency load mode reports J043 blocker`() {
+        val paperYml = FixtureJars.descriptor(
+            "InvalidDepLoad",
+            "fixtures.clean.CleanPlugin",
+            "26.3",
+            extraLines = listOf(
+                "dependencies:",
+                "  server:",
+                "    Vault:",
+                "      load: SOMETHING_WRONG",
+            ),
+        )
+        val jar = FixtureJars.pluginJar(
+            jarName = "invalid-dep-load",
+            descriptor = paperYml,
+            descriptorEntry = "paper-plugin.yml",
+            packagePaths = listOf("fixtures/clean/"),
+        )
+        val report = audit(jar)
+        val finding = report.findings.firstOrNull { it.ruleId == "J043" }
+        assertTrue(finding != null) { "expected J043 in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.BLOCKER, finding!!.severity)
+        assertTrue(finding.detail.contains("Invalid dependency load mode")) { finding.detail }
+    }
+
+    @Test
+    fun `paper-plugin yml with contradictory bootstrap and server load order reports J043`() {
+        val paperYml = FixtureJars.descriptor(
+            "ContradictoryDepLoad",
+            "fixtures.clean.CleanPlugin",
+            "26.3",
+            extraLines = listOf(
+                "dependencies:",
+                "  bootstrap:",
+                "    Vault:",
+                "      load: BEFORE",
+                "  server:",
+                "    Vault:",
+                "      load: AFTER",
+            ),
+        )
+        val jar = FixtureJars.pluginJar(
+            jarName = "contradictory-dep-load",
+            descriptor = paperYml,
+            descriptorEntry = "paper-plugin.yml",
+            packagePaths = listOf("fixtures/clean/"),
+        )
+        val report = audit(jar)
+        val finding = report.findings.firstOrNull { it.ruleId == "J043" }
+        assertTrue(finding != null) { "expected J043 in ${report.findings.map { it.ruleId }}" }
+        assertTrue(finding!!.detail.contains("Contradictory load order")) { finding.detail }
+    }
+
+    @Test
+    fun `dual descriptors with contradictory load orders report J043`() {
+        val paperYml = FixtureJars.descriptor(
+            "DualContradictory",
+            "fixtures.clean.CleanPlugin",
+            "26.3",
+            extraLines = listOf(
+                "dependencies:",
+                "  server:",
+                "    Vault:",
+                "      load: AFTER",
+            ),
+        )
+        val legacyYml = FixtureJars.descriptor(
+            "DualContradictory",
+            "fixtures.clean.CleanPlugin",
+            "26.3",
+            extraLines = listOf(
+                "depend: [Vault]",
+            ),
+        )
+        val jar = FixtureJars.pluginJar(
+            jarName = "dual-contradictory-load",
+            descriptor = paperYml,
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf("plugin.yml" to legacyYml.toByteArray()),
+            packagePaths = listOf("fixtures/clean/"),
+        )
+        val report = audit(jar)
+        val finding = report.findings.firstOrNull { it.ruleId == "J043" }
+        assertTrue(finding != null) { "expected J043 in ${report.findings.map { it.ruleId }}" }
+        assertTrue(finding!!.detail.contains("Dual descriptors declare opposite")) { finding.detail }
+    }
 }

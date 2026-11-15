@@ -88,7 +88,8 @@ internal object DescriptorChecks {
             }
         }
 
-        if (descriptor.unknownKeys.isNotEmpty()) {            sink.add(
+        if (descriptor.unknownKeys.isNotEmpty()) {
+            sink.add(
                 JarRules.DESCRIPTOR_UNKNOWN_KEY,
                 location = descriptor.kind.entryName,
                 detail = "Ignored by the server: ${descriptor.unknownKeys.joinToString(", ")}.",
@@ -113,6 +114,8 @@ internal object DescriptorChecks {
         checkDependencyHygiene(jar, sink)
 
         checkPaperDescriptorDrift(jar, sink)
+
+        checkPaperDependencyGraph(jar, sink)
 
         if (descriptor.foliaSupported == true) {
             sink.add(
@@ -274,6 +277,123 @@ internal object DescriptorChecks {
                 detail = "plugin.yml declares ${legacy.libraries.size} Maven runtime library(ies), " +
                     "but paper-plugin.yml has no `loader:` entrypoint to resolve libraries on Paper.",
                 evidence = legacy.libraries.take(4).map { "plugin.yml library: $it" },
+            )
+        }
+    }
+
+    private fun checkPaperDependencyGraph(jar: JarInspection, sink: FindingSink) {
+        val active = jar.descriptor ?: return
+        active.load?.let { rootLoad ->
+            if (rootLoad.uppercase() !in setOf("STARTUP", "POSTWORLD")) {
+                sink.add(
+                    JarRules.PAPER_DEPENDENCY_GRAPH_INVALID,
+                    location = "${active.kind.entryName}: load",
+                    detail = "Top-level load is '$rootLoad'. Accepted load stages are STARTUP and POSTWORLD.",
+                    severityOverride = if (active.kind == DescriptorKind.PAPER) {
+                        com.salyvn.pluginscope.core.Severity.BLOCKER
+                    } else {
+                        com.salyvn.pluginscope.core.Severity.WARNING
+                    },
+                )
+            }
+        }
+
+        val paper = jar.descriptors[DescriptorKind.PAPER] ?: return
+
+        val entrypoints = listOfNotNull(
+            paper.main?.let { "main" to it },
+            paper.bootstrapper?.let { "bootstrapper" to it },
+            paper.loader?.let { "loader" to it },
+        )
+        val collisions = mutableListOf<String>()
+        for (i in entrypoints.indices) {
+            for (j in i + 1 until entrypoints.size) {
+                if (entrypoints[i].second == entrypoints[j].second) {
+                    collisions += "${entrypoints[i].first} == ${entrypoints[j].first} (${entrypoints[i].second})"
+                }
+            }
+        }
+        if (collisions.isNotEmpty()) {
+            sink.add(
+                JarRules.PAPER_DEPENDENCY_GRAPH_INVALID,
+                location = "paper-plugin.yml: entrypoints",
+                detail = "Entrypoint classes collide (${collisions.joinToString("; ")}). Paper instantiates " +
+                    "PluginBootstrap and PluginLoader before Bukkit server state exists; reusing a JavaPlugin main " +
+                    "class triggers initialization failures at startup.",
+                evidence = collisions,
+            )
+        }
+
+        val validDepLoadOrders = setOf("BEFORE", "AFTER", "OMIT")
+        for (dep in paper.dependencies) {
+            val phaseLabel = dep.phase ?: "server"
+            if (dep.load != null && dep.load !in validDepLoadOrders) {
+                sink.add(
+                    JarRules.PAPER_DEPENDENCY_GRAPH_INVALID,
+                    location = "paper-plugin.yml: dependencies.$phaseLabel.${dep.name}.load",
+                    detail = "Invalid dependency load mode '${dep.load}' on ${dep.name} (expected BEFORE, AFTER, or OMIT). " +
+                        "Paper Configurate deserialization aborts loading this plugin.",
+                    evidence = listOf("dependencies.$phaseLabel.${dep.name}.load: ${dep.load}"),
+                    severityOverride = com.salyvn.pluginscope.core.Severity.BLOCKER,
+                )
+            }
+            if (dep.optionErrors.isNotEmpty()) {
+                sink.add(
+                    JarRules.PAPER_DEPENDENCY_GRAPH_INVALID,
+                    location = "paper-plugin.yml: dependencies.$phaseLabel.${dep.name}",
+                    detail = "Invalid option schema in dependencies.$phaseLabel.${dep.name}: " +
+                        "${dep.optionErrors.joinToString("; ")}.",
+                    evidence = dep.optionErrors,
+                    severityOverride = com.salyvn.pluginscope.core.Severity.WARNING,
+                )
+            }
+        }
+
+        val bootByName = paper.dependencies
+            .filter { it.phase == "bootstrap" }
+            .associateBy { it.name.lowercase() }
+        for (serverDep in paper.dependencies.filter { it.phase == null || it.phase == "server" }) {
+            val bootDep = bootByName[serverDep.name.lowercase()] ?: continue
+            val bLoad = bootDep.load
+            val sLoad = serverDep.load
+            if (bLoad != null && sLoad != null && setOf(bLoad, sLoad) == setOf("BEFORE", "AFTER")) {
+                sink.add(
+                    JarRules.PAPER_DEPENDENCY_GRAPH_INVALID,
+                    location = "paper-plugin.yml: dependencies.${serverDep.name}",
+                    detail = "Contradictory load order for '${serverDep.name}': dependencies.bootstrap sets " +
+                        "load: $bLoad while dependencies.server sets load: $sLoad.",
+                    evidence = listOf(
+                        "dependencies.bootstrap.${bootDep.name}.load: $bLoad",
+                        "dependencies.server.${serverDep.name}.load: $sLoad",
+                    ),
+                )
+            }
+        }
+
+        val legacy = jar.descriptors[DescriptorKind.LEGACY] ?: return
+        val serverByName = paper.dependencies
+            .filter { it.phase == null || it.phase == "server" }
+            .associateBy { it.name.lowercase() }
+        val dualConflicts = mutableListOf<String>()
+        for (legDep in legacy.dependencies) {
+            val papDep = serverByName[legDep.name.lowercase()] ?: continue
+            if (papDep.load == "AFTER") {
+                val legKey = if (legDep.required) "depend" else "softdepend"
+                dualConflicts += "plugin.yml $legKey loads ${legDep.name} BEFORE plugin, but paper-plugin.yml sets server.${papDep.name}.load: AFTER"
+            }
+        }
+        for (lb in legacy.loadBefore) {
+            val papDep = serverByName[lb.lowercase()] ?: continue
+            if (papDep.load == "BEFORE") {
+                dualConflicts += "plugin.yml loadbefore loads plugin BEFORE $lb, but paper-plugin.yml sets server.${papDep.name}.load: BEFORE"
+            }
+        }
+        if (dualConflicts.isNotEmpty()) {
+            sink.add(
+                JarRules.PAPER_DEPENDENCY_GRAPH_INVALID,
+                location = "paper-plugin.yml vs plugin.yml: load order",
+                detail = "Dual descriptors declare opposite topological load directions (${dualConflicts.size} conflict(s)).",
+                evidence = dualConflicts,
             )
         }
     }
