@@ -20,7 +20,16 @@ Four commands, four questions:
 
 `pluginscope mcp` also serves all analyses over the Model Context Protocol on `stdio` so coding agents can audit plugin artifacts directly.
 
-## What is new in v0.3.0
+## What is new in v0.4.0
+
+- ASM bytecode dataflow and `onDisable` call-graph leak analysis (`J070` - `J073`):
+  - `J070`: Tracks `BukkitTask` and Folia `ScheduledTask` handles across operand stacks and local variables, flagging repeating tasks discarded via `POP` in dynamic code paths or accumulated in `static` fields and collections without cancellation and clearing in `onDisable` (suppressing self-cancelling `BukkitRunnable` subclasses and helper/lambda shutdown chains).
+  - `J071`: Detects unmanaged `Executors.new*` pools, `ThreadPoolExecutor`, `java.util.Timer`, and `Thread.start()` calls whose worker threads pin `PaperPluginClassLoader` in JVM GC roots when not shut down in `onDisable` (while allowing method-scoped `ExecutorService.close()` usage).
+  - `J072`: Audits `static` fields and generic signatures retaining live `Player`, `Entity`, `World`, `Chunk`, or `BlockState` references without `onDisable` or `PlayerQuitEvent` / `WorldUnloadEvent` cleanup (allowing `UUID` keys and `WeakHashMap`).
+  - `J073`: Flags JVM classloader-pinning hooks (`Runtime.addShutdownHook`, `DriverManager.registerDriver`, `Logger.addHandler` without deregistration in `onDisable`) and unremoved `static ThreadLocal` fields.
+- Zero-backend browser inspector upgrade (`docs/index.html`): Parses `.class` static field signatures, method tables, and `Methodref` constant-pool entries locally in the browser to detect `J070` - `J073` with a live binary leak demo.
+
+## Previous highlights in v0.3.0
 
 - Paper 26.3+ api-version and Mojang-mapped bytecode verification (J014, J025, J026):
   - J014: Flags legacy plugin.yml descriptors declaring modern Paper api-version 26.3+. Paper 26.3 requires paper-plugin.yml for modern Paper features and classloader isolation, while Spigot rejects 26.x declarations.
@@ -38,37 +47,37 @@ Java 21 or newer. The release JAR is self-contained.
 
 ## Install
 
-Download `pluginscope-0.3.0.jar` from [GitHub Releases](https://github.com/SalyyS1/pluginscope/releases) and run:
+Download `pluginscope-0.4.0.jar` from [GitHub Releases](https://github.com/SalyyS1/pluginscope/releases) and run:
 
 ```bash
-java -jar pluginscope-0.3.0.jar --help
+java -jar pluginscope-0.4.0.jar --help
 ```
 
 ## Quick start
 
 ```bash
 # Audit one plugin JAR against a target Minecraft server version
-java -jar pluginscope-0.3.0.jar jar MyPlugin.jar --target 26.3
+java -jar pluginscope-0.4.0.jar jar MyPlugin.jar --target 26.3
 
 # Check API compatibility against Paper 1.21.4 (downloads and caches paper-api once)
-java -jar pluginscope-0.3.0.jar compat MyPlugin.jar --mc 1.21.4
+java -jar pluginscope-0.4.0.jar compat MyPlugin.jar --mc 1.21.4
 
 # Audit an entire server plugins/ folder for classloader blocks and shading collisions
-java -jar pluginscope-0.3.0.jar stack /srv/mc/plugins
+java -jar pluginscope-0.4.0.jar stack /srv/mc/plugins
 
 # Emit console output AND write OASIS SARIF v2.1.0 in a single run
-java -jar pluginscope-0.3.0.jar stack /srv/mc/plugins --sarif pluginscope.sarif
+java -jar pluginscope-0.4.0.jar stack /srv/mc/plugins --sarif pluginscope.sarif
 
 # Validate a resource pack directory or zip
-java -jar pluginscope-0.3.0.jar pack pack.zip --mc 26.3
+java -jar pluginscope-0.4.0.jar pack pack.zip --mc 26.3
 
 # Print all rules with rationale, remediation, and primary source provenance
-java -jar pluginscope-0.3.0.jar rules
+java -jar pluginscope-0.4.0.jar rules
 ```
 
 ## GitHub Actions & Code Scanning (SARIF v2.1.0)
 
-Use the composite action `SalyyS1/pluginscope@v0.3.0` to gate pull requests and publish shading, packaging, and Paper classloader findings directly to the GitHub **Security -> Code scanning** tab:
+Use the composite action `SalyyS1/pluginscope@v0.4.0` to gate pull requests and publish shading, packaging, and Paper classloader findings directly to the GitHub **Security -> Code scanning** tab:
 
 ```yaml
 name: Plugin Audit
@@ -92,7 +101,7 @@ jobs:
         run: ./gradlew build --no-daemon
 
       - name: Run PluginScope static audit
-        uses: SalyyS1/pluginscope@v0.3.0
+        uses: SalyyS1/pluginscope@v0.4.0
         with:
           command: jar
           path: build/libs
@@ -198,7 +207,7 @@ plugins directory: /srv/mc/plugins
   "mcpServers": {
     "pluginscope": {
       "command": "java",
-      "args": ["-jar", "/absolute/path/to/pluginscope-0.3.0.jar", "mcp"]
+      "args": ["-jar", "/absolute/path/to/pluginscope-0.4.0.jar", "mcp"]
     }
   }
 }
@@ -222,7 +231,7 @@ Exposed read-only tools: `scan_jar`, `check_api_compat`, `audit_plugins_dir`, `v
 ./gradlew test shadowJar --no-daemon
 ```
 
-Produces `build/libs/pluginscope-0.3.0.jar` (self-contained shaded CLI) and runs the full JUnit 6 suite against compiled bytecode fixtures.
+Produces `build/libs/pluginscope-0.4.0.jar` (self-contained shaded CLI) and runs the full JUnit 6 suite against compiled bytecode fixtures.
 
 ## Licence
 

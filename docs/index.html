@@ -347,7 +347,7 @@
     </div>
     <div class="nav-links">
       <a class="pill-link" href="https://github.com/SalyyS1/pluginscope">GitHub Repository</a>
-      <a class="pill-link" href="https://github.com/SalyyS1/pluginscope/releases/latest">Download CLI v0.2.0</a>
+      <a class="pill-link" href="https://github.com/SalyyS1/pluginscope/releases/latest">Download CLI v0.4.0</a>
       <a class="pill-link" href="https://salyys1.github.io/foliascan/">FoliaScan</a>
       <a class="pill-link" href="https://salyys1.github.io/serverdoctor/">ServerDoctor</a>
     </div>
@@ -357,7 +357,7 @@
     <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Select one or more plugin JAR files">
       <input type="file" id="fileInput" accept=".jar,.zip" multiple style="display:none">
       <h2>Drop one `.jar` or an entire `plugins/` set of `.jar` files here</h2>
-      <p>Drop a single JAR for packaging &amp; descriptor drift checks, or drop 2+ JARs to audit cross-plugin classloader isolation and transitive shading collisions.</p>
+      <p>Drop a single JAR for packaging, descriptor drift, and async scheduler/classloader leak checks, or drop 2+ JARs to audit cross-plugin classloader isolation and transitive shading collisions.</p>
     </div>
 
     <div class="preset-box">
@@ -368,6 +368,7 @@
       <div class="btn-row">
         <button class="primary" id="btnDemoStack" type="button">Demo: 3-JAR Shading &amp; Paper Classloader Collision</button>
         <button id="btnDemoSingle" type="button">Demo: Single-JAR Unrelocated bStats + Drift</button>
+        <button id="btnDemoLeak" type="button">Demo: Scheduler &amp; Classloader Leak (J070-J073)</button>
       </div>
     </div>
   </div>
@@ -420,7 +421,7 @@
   </div>
 
   <footer>
-    <div>PluginScope v0.2.0 | Pure client-side ZIP central directory + JVM bytecode constant-pool inspector (Apache-2.0)</div>
+    <div>PluginScope v0.4.0 | Pure client-side ZIP central directory + JVM bytecode constant-pool and lifecycle inspector (Apache-2.0)</div>
     <div>Companion tools: <a href="https://github.com/SalyyS1/foliascan">foliascan</a> | <a href="https://github.com/SalyyS1/serverdoctor">serverdoctor</a> | <a href="https://github.com/SalyyS1/minecraftkit">minecraftkit</a></div>
   </footer>
 </div>
@@ -567,6 +568,8 @@
     const cpCount = view.getUint16(8, false);
     const utf8Pool = new Array(cpCount);
     const classRefIndices = [];
+    const nameAndTypePool = new Map();
+    const methodRefEntries = [];
     const nameAndTypeCount = { count: 0 };
     const decoder = new TextDecoder("utf-8");
 
@@ -591,8 +594,22 @@
         case 8: case 16: case 19: case 20:
           offset += 2;
           break;
-        case 3: case 4: case 9: case 10: case 11: case 12: case 17: case 18:
-          if (tag === 12) nameAndTypeCount.count++;
+        case 10: case 11: { // CONSTANT_Methodref / CONSTANT_InterfaceMethodref
+          const classIndex = view.getUint16(offset, false);
+          const ntIndex = view.getUint16(offset + 2, false);
+          methodRefEntries.push({ classIndex, ntIndex });
+          offset += 4;
+          break;
+        }
+        case 12: { // CONSTANT_NameAndType
+          nameAndTypeCount.count++;
+          const nameIndex = view.getUint16(offset, false);
+          const descIndex = view.getUint16(offset + 2, false);
+          nameAndTypePool.set(idx, { nameIndex, descIndex });
+          offset += 4;
+          break;
+        }
+        case 3: case 4: case 9: case 17: case 18:
           offset += 4;
           break;
         case 5: case 6:
@@ -613,10 +630,23 @@
       if (str) classByCp.set(item.cpIndex, str);
     }
 
+    const methodCalls = [];
+    for (const mr of methodRefEntries) {
+      const owner = classByCp.get(mr.classIndex);
+      const nt = nameAndTypePool.get(mr.ntIndex);
+      if (owner && nt) {
+        const mName = utf8Pool[nt.nameIndex] || "";
+        const mDesc = utf8Pool[nt.descIndex] || "";
+        if (mName) methodCalls.push({ owner, name: mName, desc: mDesc });
+      }
+    }
+
     let internalName = null;
     let superName = null;
     let fieldsCount = 0;
     let methodsCount = 0;
+    const staticFields = [];
+    const declaredMethods = [];
     if (offset + 6 <= u8.byteLength) {
       const thisCp = view.getUint16(offset + 2, false);
       const superCp = view.getUint16(offset + 4, false);
@@ -628,15 +658,38 @@
         fieldsCount = view.getUint16(memberPos, false);
         memberPos += 2;
         for (let f = 0; f < fieldsCount && memberPos + 8 <= u8.byteLength; f++) {
+          const fAccess = view.getUint16(memberPos, false);
+          const fName = utf8Pool[view.getUint16(memberPos + 2, false)] || "";
+          const fDesc = utf8Pool[view.getUint16(memberPos + 4, false)] || "";
           const attrCount = view.getUint16(memberPos + 6, false);
+          let fSig = "";
           memberPos += 8;
           for (let a = 0; a < attrCount && memberPos + 6 <= u8.byteLength; a++) {
+            const attrName = utf8Pool[view.getUint16(memberPos, false)] || "";
             const attrLen = view.getUint32(memberPos + 2, false);
+            if (attrName === "Signature" && attrLen >= 2 && memberPos + 8 <= u8.byteLength) {
+              fSig = utf8Pool[view.getUint16(memberPos + 6, false)] || "";
+            }
             memberPos += 6 + attrLen;
+          }
+          if ((fAccess & 0x0008) !== 0 && fName) {
+            staticFields.push({ name: fName, descriptor: fDesc, signature: fSig });
           }
         }
         if (memberPos + 2 <= u8.byteLength) {
           methodsCount = view.getUint16(memberPos, false);
+          memberPos += 2;
+          for (let m = 0; m < methodsCount && memberPos + 8 <= u8.byteLength; m++) {
+            const mName = utf8Pool[view.getUint16(memberPos + 2, false)] || "";
+            const mDesc = utf8Pool[view.getUint16(memberPos + 4, false)] || "";
+            const attrCount = view.getUint16(memberPos + 6, false);
+            if (mName) declaredMethods.push(mName + mDesc);
+            memberPos += 8;
+            for (let a = 0; a < attrCount && memberPos + 6 <= u8.byteLength; a++) {
+              const attrLen = view.getUint32(memberPos + 2, false);
+              memberPos += 6 + attrLen;
+            }
+          }
         }
       }
     }
@@ -652,7 +705,7 @@
 
     const isKotlin = utf8Pool.includes("Lkotlin/Metadata;");
     const abiSig = `${internalName}@${majorVersion}:f=${fieldsCount}:m=${methodsCount}:nt=${nameAndTypeCount.count}`;
-    return { internalName, superName, majorVersion, isKotlin, referencedClasses, abiSig };
+    return { internalName, superName, majorVersion, isKotlin, referencedClasses, staticFields, declaredMethods, methodCalls, abiSig };
   }
 
   // Lightweight safe parser for plugin.yml and paper-plugin.yml
@@ -1083,6 +1136,139 @@
         add("J031", "critical", "Signature files survived shading", prefix + "META-INF",
           `${sigFiles.length} signature file(s) (${sigFiles[0].name}) will trigger SecurityException at class load.`, [],
           "Exclude META-INF/*.SF, META-INF/*.DSA, and META-INF/*.RSA in ShadowJar.");
+      }
+
+      // Lifecycle, async scheduler, and classloader leak checks (J070 - J073) across plugin's own classes
+      const ownClasses = jar.classes.filter(c => jar.isOwnCode(c.internalName));
+      if (ownClasses.length > 0) {
+        const ownCalls = ownClasses.flatMap(c => (c.methodCalls || []).map(mc => ({ cls: c.internalName, ...mc })));
+        const hasDisable = ownClasses.some(c => (c.declaredMethods || []).includes("onDisable()V"));
+        const cancelsTasks = ownCalls.some(mc =>
+          ((mc.owner === "org/bukkit/scheduler/BukkitTask" ||
+            mc.owner === "io/papermc/paper/threadedregions/scheduler/ScheduledTask" ||
+            mc.owner === "org/bukkit/scheduler/BukkitRunnable") && mc.name === "cancel") ||
+          (mc.owner === "org/bukkit/scheduler/BukkitScheduler" && (mc.name === "cancelTask" || mc.name === "cancelTasks")) ||
+          (mc.owner.startsWith("io/papermc/paper/threadedregions/scheduler/") && mc.name === "cancelTasks")
+        );
+        const clearsCollections = hasDisable && ownCalls.some(mc => mc.name === "clear");
+
+        // J070: Static BukkitTask / ScheduledTask accumulation without cancellation or clearing in onDisable
+        for (const c of ownClasses) {
+          for (const sf of (c.staticFields || [])) {
+            const sig = (sf.signature || "") + " " + (sf.descriptor || "");
+            if (sig.includes("Lorg/bukkit/scheduler/BukkitTask;") ||
+                sig.includes("Lio/papermc/paper/threadedregions/scheduler/ScheduledTask;")) {
+              const isColl = /^Ljava\/util\/(List|ArrayList|Set|HashSet|Collection|Queue|Deque|Map|HashMap|concurrent\/)/.test(sf.descriptor);
+              if ((isColl && (!cancelsTasks || !clearsCollections)) || (!isColl && !cancelsTasks)) {
+                const loc = `${prefix}${c.internalName.replace(/\//g, ".")}#${sf.name}`;
+                add("J070", isColl ? "critical" : "warning",
+                  "Scheduled task handle is leaked or accumulated without cancellation",
+                  loc,
+                  `Static ${isColl ? "collection" : "field"} ${c.internalName.replace(/\//g, ".")}#${sf.name} retains scheduled task handles without task cancellation${isColl ? " and collection clearing" : ""} in onDisable().`,
+                  [`static field ${sf.name}: ${sf.signature || sf.descriptor}`],
+                  "Cancel active BukkitTask and ScheduledTask handles in onDisable and clear static task collections.");
+              }
+            }
+          }
+        }
+
+        // J071: Unmanaged ExecutorService, Timer, or raw Thread started without onDisable shutdown
+        const shutsDownExec = hasDisable && ownCalls.some(mc =>
+          mc.owner.startsWith("java/util/concurrent/") &&
+          (mc.name === "shutdown" || mc.name === "shutdownNow" || mc.name === "close")
+        );
+        const cancelsTimer = hasDisable && ownCalls.some(mc => mc.owner === "java/util/Timer" && mc.name === "cancel");
+        const stopsThread = hasDisable && ownCalls.some(mc => mc.owner === "java/lang/Thread" && (mc.name === "interrupt" || mc.name === "join"));
+
+        const execCreation = ownCalls.find(mc =>
+          (mc.owner === "java/util/concurrent/Executors" && mc.name.startsWith("new")) ||
+          ((mc.owner === "java/util/concurrent/ThreadPoolExecutor" ||
+            mc.owner === "java/util/concurrent/ScheduledThreadPoolExecutor" ||
+            mc.owner === "java/util/concurrent/ForkJoinPool") && mc.name === "<init>")
+        );
+        if (execCreation && !shutsDownExec) {
+          add("J071", "critical", "Unmanaged ExecutorService, Timer, or Thread started without onDisable shutdown",
+            `${prefix}${execCreation.cls.replace(/\//g, ".")}`,
+            `Creates unmanaged pool via ${execCreation.owner.replace(/\//g, ".")}#${execCreation.name} without ExecutorService.shutdown() in onDisable(), pinning PaperPluginClassLoader in JVM GC roots.`,
+            [`${execCreation.cls.replace(/\//g, ".")} -> ${execCreation.owner.replace(/\//g, ".")}#${execCreation.name}`],
+            "Invoke shutdown() or shutdownNow() in onDisable, or use BukkitScheduler and AsyncScheduler.");
+        }
+
+        const timerCreation = ownCalls.find(mc => mc.owner === "java/util/Timer" && mc.name === "<init>");
+        if (timerCreation && !cancelsTimer) {
+          add("J071", "critical", "Unmanaged ExecutorService, Timer, or Thread started without onDisable shutdown",
+            `${prefix}${timerCreation.cls.replace(/\//g, ".")}`,
+            "Instantiates java.util.Timer without Timer.cancel() in onDisable(), leaving a live timer thread pinning contextClassLoader.",
+            [`${timerCreation.cls.replace(/\//g, ".")} -> java.util.Timer#<init>`],
+            "Call Timer.cancel() in onDisable or migrate to AsyncScheduler.");
+        }
+
+        const threadStart = ownCalls.find(mc => mc.owner === "java/lang/Thread" && mc.name === "start" && mc.desc === "()V");
+        if (threadStart && !stopsThread) {
+          add("J071", "critical", "Unmanaged ExecutorService, Timer, or Thread started without onDisable shutdown",
+            `${prefix}${threadStart.cls.replace(/\//g, ".")}`,
+            "Spawns raw java.lang.Thread#start() without Thread.interrupt() or join() in onDisable().",
+            [`${threadStart.cls.replace(/\//g, ".")} -> java.lang.Thread#start()V`],
+            "Interrupt and join custom threads in onDisable or migrate to server schedulers.");
+        }
+
+        // J072: Static field or collection retaining live Player, Entity, World, or Chunk instances
+        const hasQuitOrClear = clearsCollections || ownClasses.some(c =>
+          (c.declaredMethods || []).some(m =>
+            m.includes("PlayerQuitEvent;") || m.includes("WorldUnloadEvent;") || m.includes("ChunkUnloadEvent;")
+          )
+        );
+        const liveServerTokens = [
+          ["Lorg/bukkit/entity/Player;", "Player"],
+          ["Lorg/bukkit/entity/Entity;", "Entity"],
+          ["Lorg/bukkit/World;", "World"],
+          ["Lorg/bukkit/Chunk;", "Chunk"],
+          ["Lorg/bukkit/block/BlockState;", "BlockState"]
+        ];
+        for (const c of ownClasses) {
+          for (const sf of (c.staticFields || [])) {
+            const sig = (sf.signature || "") + " " + (sf.descriptor || "");
+            if (sig.includes("WeakHashMap") || sig.includes("WeakReference") || sig.includes("SoftReference")) continue;
+            const hitType = liveServerTokens.find(([tok]) => sig.includes(tok));
+            if (hitType && !hasQuitOrClear) {
+              const loc = `${prefix}${c.internalName.replace(/\//g, ".")}#${sf.name}`;
+              add("J072", "warning", "Static field or collection retains live Player, Entity, World, or Chunk instances",
+                loc,
+                `Static field ${c.internalName.replace(/\//g, ".")}#${sf.name} strongly retains live ${hitType[1]} instances without cleanup in onDisable() or disconnect/unload listeners.`,
+                [`field ${sf.name}: ${sf.signature || sf.descriptor}`],
+                "Key caches by UUID or NamespacedKey, use WeakHashMap, or clear on PlayerQuitEvent / onDisable.");
+            }
+          }
+        }
+
+        // J073: JVM classloader-pinning hook or unremoved static ThreadLocal
+        const addHook = ownCalls.find(mc => mc.owner === "java/lang/Runtime" && mc.name === "addShutdownHook");
+        const removeHook = hasDisable && ownCalls.some(mc => mc.owner === "java/lang/Runtime" && mc.name === "removeShutdownHook");
+        if (addHook && !removeHook) {
+          add("J073", "critical", "JVM hook or unremoved static ThreadLocal pins the plugin classloader",
+            `${prefix}${addHook.cls.replace(/\//g, ".")}`,
+            "Calls Runtime.addShutdownHook without Runtime.removeShutdownHook in onDisable(), pinning PaperPluginClassLoader until JVM exit.",
+            [`${addHook.cls.replace(/\//g, ".")} -> java.lang.Runtime#addShutdownHook`],
+            "Deregister shutdown hooks in onDisable.");
+        }
+
+        const removesThreadLocal = ownCalls.some(mc =>
+          (mc.owner === "java/lang/ThreadLocal" || mc.owner === "java/lang/InheritableThreadLocal") && mc.name === "remove"
+        );
+        if (!removesThreadLocal) {
+          for (const c of ownClasses) {
+            for (const sf of (c.staticFields || [])) {
+              if (sf.descriptor === "Ljava/lang/ThreadLocal;" || sf.descriptor === "Ljava/lang/InheritableThreadLocal;") {
+                const loc = `${prefix}${c.internalName.replace(/\//g, ".")}#${sf.name}`;
+                add("J073", "critical", "JVM hook or unremoved static ThreadLocal pins the plugin classloader",
+                  loc,
+                  `Static ThreadLocal ${c.internalName.replace(/\//g, ".")}#${sf.name} never calls ThreadLocal.remove(), retaining plugin objects inside shared server and Netty ThreadLocalMaps.`,
+                  [`static field ${sf.name}: ${sf.descriptor}`],
+                  "Always invoke ThreadLocal.remove() in a finally block.");
+              }
+            }
+          }
+        }
       }
     }
 
@@ -1717,6 +1903,143 @@
     await handleFiles([singleJar]);
   });
 
+  // Demo 3: Async scheduler, static Player map, unmanaged ExecutorService, and classloader-pinning hook (J070-J073)
+  function buildSyntheticLeakPluginClass() {
+    const enc = new TextEncoder();
+    const cpChunks = [];
+    let cpIndex = 1;
+    const utfIdx = {};
+    function u8str(s) {
+      if (utfIdx[s]) return utfIdx[s];
+      const raw = enc.encode(s);
+      const b = new Uint8Array(3 + raw.length);
+      b[0] = 1; b[1] = (raw.length >> 8) & 0xff; b[2] = raw.length & 0xff;
+      b.set(raw, 3);
+      cpChunks.push(b);
+      utfIdx[s] = cpIndex++;
+      return utfIdx[s];
+    }
+    function clsRef(name) {
+      const u = u8str(name);
+      cpChunks.push(new Uint8Array([7, (u >> 8) & 0xff, u & 0xff]));
+      return cpIndex++;
+    }
+    function methodRef(owner, name, desc) {
+      const cIdx = clsRef(owner);
+      const nIdx = u8str(name);
+      const dIdx = u8str(desc);
+      cpChunks.push(new Uint8Array([12, (nIdx >> 8) & 0xff, nIdx & 0xff, (dIdx >> 8) & 0xff, dIdx & 0xff]));
+      const ntIdx = cpIndex++;
+      cpChunks.push(new Uint8Array([10, (cIdx >> 8) & 0xff, cIdx & 0xff, (ntIdx >> 8) & 0xff, ntIdx & 0xff]));
+      return cpIndex++;
+    }
+
+    const thisClassIdx = clsRef("com/acme/arena/ArenaLeakPlugin");
+    const objClassIdx = clsRef("java/lang/Object");
+    const sigAttrName = u8str("Signature");
+    const codeAttrName = u8str("Code");
+    const initName = u8str("<init>");
+    const voidDesc = u8str("()V");
+
+    // Static fields: TASKS (J070), ACTIVE_PLAYERS (J072), CTX (J073)
+    const fTasksName = u8str("TASKS");
+    const fListDesc = u8str("Ljava/util/List;");
+    const fTasksSig = u8str("Ljava/util/List<Lorg/bukkit/scheduler/BukkitTask;>;");
+
+    const fPlayersName = u8str("ACTIVE_PLAYERS");
+    const fMapDesc = u8str("Ljava/util/Map;");
+    const fPlayersSig = u8str("Ljava/util/Map<Lorg/bukkit/entity/Player;Ljava/lang/Integer;>;");
+
+    const fCtxName = u8str("CTX");
+    const fTlDesc = u8str("Ljava/lang/ThreadLocal;");
+
+    // Methodrefs in constant pool: Executors.newScheduledThreadPool (J071) & Runtime.addShutdownHook (J073)
+    const execMr = methodRef("java/util/concurrent/Executors", "newScheduledThreadPool", "(I)Ljava/util/concurrent/ScheduledExecutorService;");
+    methodRef("java/lang/Runtime", "addShutdownHook", "(Ljava/lang/Thread;)V");
+
+    const header = new Uint8Array(10);
+    const hv = new DataView(header.buffer);
+    hv.setUint32(0, 0xCAFEBABE, false);
+    hv.setUint16(6, 65, false);
+    hv.setUint16(8, cpIndex, false);
+
+    const clsTail = new Uint8Array(10);
+    const tv = new DataView(clsTail.buffer);
+    tv.setUint16(0, 0x0021, false);
+    tv.setUint16(2, thisClassIdx, false);
+    tv.setUint16(4, objClassIdx, false);
+    tv.setUint16(6, 0, false);
+    tv.setUint16(8, 3, false); // 3 static fields
+
+    function buildStaticField(nameIdx, descIdx, sigIdx) {
+      if (sigIdx) {
+        const b = new Uint8Array(8 + 8);
+        const dv = new DataView(b.buffer);
+        dv.setUint16(0, 0x001a, false); // ACC_PRIVATE | ACC_STATIC | ACC_FINAL
+        dv.setUint16(2, nameIdx, false);
+        dv.setUint16(4, descIdx, false);
+        dv.setUint16(6, 1, false);
+        dv.setUint16(8, sigAttrName, false);
+        dv.setUint32(10, 2, false);
+        dv.setUint16(14, sigIdx, false);
+        return b;
+      }
+      const b = new Uint8Array(8);
+      const dv = new DataView(b.buffer);
+      dv.setUint16(0, 0x001a, false);
+      dv.setUint16(2, nameIdx, false);
+      dv.setUint16(4, descIdx, false);
+      dv.setUint16(6, 0, false);
+      return b;
+    }
+
+    const codeBytes = new Uint8Array([0x05, 0xb8, (execMr >> 8) & 0xff, execMr & 0xff, 0x57, 0xb1]);
+    const methodsHeader = new Uint8Array([0, 1]);
+    const methodEntry = new Uint8Array(8 + 6 + 12 + codeBytes.length);
+    const mv = new DataView(methodEntry.buffer);
+    mv.setUint16(0, 0x0001, false);
+    mv.setUint16(2, initName, false);
+    mv.setUint16(4, voidDesc, false);
+    mv.setUint16(6, 1, false);
+    mv.setUint16(8, codeAttrName, false);
+    mv.setUint32(10, 12 + codeBytes.length, false);
+    mv.setUint16(14, 2, false);
+    mv.setUint16(16, 1, false);
+    mv.setUint32(18, codeBytes.length, false);
+    methodEntry.set(codeBytes, 22);
+
+    const parts = [
+      header,
+      ...cpChunks,
+      clsTail,
+      buildStaticField(fTasksName, fListDesc, fTasksSig),
+      buildStaticField(fPlayersName, fMapDesc, fPlayersSig),
+      buildStaticField(fCtxName, fTlDesc, 0),
+      methodsHeader,
+      methodEntry,
+      new Uint8Array([0, 0])
+    ];
+    const total = parts.reduce((s, p) => s + p.length, 0);
+    const out = new Uint8Array(total);
+    let pos = 0;
+    for (const p of parts) { out.set(p, pos); pos += p.length; }
+    return out;
+  }
+
+  document.getElementById("btnDemoLeak").addEventListener("click", async () => {
+    const leakJar = buildStoredZip("ArenaLeakPlugin-1.0.0.jar", {
+      "paper-plugin.yml": [
+        "name: ArenaLeakPlugin",
+        "version: '1.0.0'",
+        "main: com.acme.arena.ArenaLeakPlugin",
+        "api-version: '26.3'",
+        "folia-supported: true"
+      ].join("\n"),
+      "com/acme/arena/ArenaLeakPlugin.class": buildSyntheticLeakPluginClass()
+    });
+    await handleFiles([leakJar]);
+  });
+
   function downloadBlob(filename, content, type) {
     const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);
@@ -1730,7 +2053,7 @@
   btnExportJson.addEventListener("click", () => {
     const payload = {
       tool: "pluginscope-web",
-      toolVersion: "0.2.0",
+      toolVersion: "0.4.0",
       jars: currentJars.map(j => ({
         fileName: j.fileName,
         plugin: j.descriptor ? j.descriptor.name : null,
@@ -1765,7 +2088,7 @@
         tool: {
           driver: {
             name: "pluginscope",
-            version: "0.2.0",
+            version: "0.4.0",
             informationUri: "https://github.com/SalyyS1/pluginscope",
             rules: uniqueRules
           }

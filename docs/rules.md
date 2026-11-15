@@ -1,6 +1,6 @@
 # Rules
 
-Every check pluginscope can report, as printed by `pluginscope rules` in version 0.2.0.
+Every check pluginscope can report, as printed by `pluginscope rules` in version 0.4.0.
 Each rule carries the source of the fact behind it, so a finding can be argued with.
 
 Severities: `blocker` means the artifact does not load, `critical` means it loads and then
@@ -9,7 +9,7 @@ being claimed.
 
 ## pluginscope jar
 
-25 rules.
+32 rules.
 
 ### J001 - No plugin descriptor
 
@@ -141,6 +141,16 @@ being claimed.
 
 **Source.** SnakeYAML's YAML 1.1 float resolver, applied to the same descriptor the server loads with org.yaml.snakeyaml.Yaml (referenced from paper-api PluginDescriptionFile)
 
+### J014 - api-version targets modern Paper 26.x+ in legacy plugin.yml
+
+`warning`
+
+**Why it matters.** Spigot's plugin loader only recognizes historical 1.13 through 1.21 api-version declarations. Declaring 26.x or 26.3 in a legacy plugin.yml causes Spigot to reject the plugin or fall back to pre-1.13 legacy mode. For modern Paper 26.x releases, declare paper-plugin.yml or dual descriptors.
+
+**Fix.** Migrate to paper-plugin.yml for Paper 26.x+, or declare a dual-descriptor setup with 1.21 fallback in plugin.yml.
+
+**Source.** Spigot PluginDescriptionFile valid api-version patterns vs Paper 26.x apiVersioning.json
+
 ### J020 - Jar ships classes from the server's own namespace
 
 `critical`
@@ -190,6 +200,26 @@ being claimed.
 **Fix.** Relocate org.bstats under your own package in ShadowJar or maven-shade-plugin.
 
 **Source.** org.bstats.Metrics static relocation guard in bstats-base
+
+### J025 - Bytecode references legacy versioned NMS or CraftBukkit package on Paper 26.x+
+
+`critical`
+
+**Why it matters.** Paper 26.x has removed all legacy versioned package shims (net.minecraft.server.v1_XX_RX and org.bukkit.craftbukkit.v1_XX_RX). Plugins declaring api-version 26.x or running on modern Paper throw ClassNotFoundException upon touching versioned packages.
+
+**Fix.** Use the unversioned Bukkit/Paper API or unversioned CraftBukkit/Mojang-mapped classes.
+
+**Source.** PaperMC modern classloader removal of CraftBukkit versioned relocation shims
+
+### J026 - Mojang-mapped net.minecraft bytecode referenced in legacy plugin.yml
+
+`critical`
+
+**Why it matters.** Unversioned net.minecraft references require Mojang runtime mappings. Legacy plugin.yml plugins deployed on Spigot or pre-1.20.5 Paper servers fail with ClassNotFoundException because Spigot does not provide Mojang-mapped packages to legacy plugins.
+
+**Fix.** Migrate to paper-plugin.yml to run with Mojang mappings, or compile against the public Bukkit API.
+
+**Source.** Spigot runtime obfuscation vs Paper paper-plugin.yml Mojang-mapped runtime classloader
 
 ### J030 - Jar contains entries that do not belong in a release build
 
@@ -261,6 +291,46 @@ being claimed.
 
 **Source.** folia-supported key in the descriptor
 
+### J070 - Scheduled task handle is leaked or accumulated without cancellation
+
+`warning`
+
+**Why it matters.** Repeating scheduler tasks whose BukkitTask or ScheduledTask handle is discarded in dynamic code paths or accumulated in static fields and collections without cancellation or clearing in onDisable continue accumulating callbacks, retaining captured listener and world state.
+
+**Fix.** Retain the returned BukkitTask or ScheduledTask handle, cancel repeating tasks when work finishes or in onDisable, and clear static task collections during plugin shutdown.
+
+**Source.** PaperMC/Paper BukkitScheduler, AsyncScheduler, and RegionScheduler task lifecycle contracts
+
+### J071 - Unmanaged ExecutorService, Timer, or Thread started without onDisable shutdown
+
+`critical`
+
+**Why it matters.** Bukkit and Paper only cancel tasks submitted through server scheduler APIs. Raw ExecutorService pools, java.util.Timer threads, and java.lang.Thread instances inherit PaperPluginClassLoader as their contextClassLoader and remain live JVM GC roots across plugin disable or reload unless explicitly shut down.
+
+**Fix.** Shut down custom ExecutorService instances (shutdown or shutdownNow), cancel java.util.Timer instances in onDisable, or migrate background work to BukkitScheduler and AsyncScheduler.
+
+**Source.** PaperMC/Paper PaperPluginClassLoader lifecycle and JVM live-thread GC root semantics
+
+### J072 - Static field or collection retains live Player, Entity, World, or Chunk instances
+
+`warning`
+
+**Why it matters.** Strong static references to live server lifecycle objects (Player, Entity, World, Chunk, BlockState) prevent the JVM from garbage-collecting disconnected players and unloaded ServerLevel chunk graphs until the static reference is cleared.
+
+**Fix.** Key caches by UUID or NamespacedKey instead of live Entity or World references, use WeakHashMap, or clear the static field in onDisable and disconnect or unload event handlers.
+
+**Source.** PaperMC/Paper ServerPlayer and ServerLevel unload lifecycle
+
+### J073 - JVM hook or unremoved static ThreadLocal pins the plugin classloader
+
+`critical`
+
+**Why it matters.** Registering Runtime.addShutdownHook, DriverManager.registerDriver, or JUL Logger.addHandler without deregistration in onDisable, or storing values in a static ThreadLocal without calling ThreadLocal.remove(), anchors PaperPluginClassLoader inside JVM global structures or shared server and Netty thread maps.
+
+**Fix.** Deregister shutdown hooks, JDBC drivers, and log handlers inside onDisable, and always invoke ThreadLocal.remove() in a finally block.
+
+**Source.** java.lang.ApplicationShutdownHooks, java.sql.DriverManager, and java.lang.ThreadLocalMap classloader retention
+
 ## pluginscope compat
 
 5 rules.
@@ -317,7 +387,7 @@ being claimed.
 
 ## pluginscope stack
 
-16 rules.
+18 rules.
 
 ### S001 - Hard dependency is not installed
 
@@ -438,6 +508,26 @@ being claimed.
 **Fix.** Relocate shaded transitive libraries under each plugin's own package, or declare shared Maven coordinates in the descriptor `libraries:` section.
 
 **Source.** Unrelocated high-risk transitive package roots fingerprinted by class ABI across installed jars
+
+### S033 - Service provider interface or registration shaded across multiple plugins
+
+`critical`
+
+**Why it matters.** When multiple plugins bundle the same Service provider interface (e.g. from META-INF/services/ or Bukkit ServicesManager/RegisteredServiceProvider) without relocation, service registrations across plugin classloaders fail with ClassCastException or return null because ClassLoader A's Service.class does not equal ClassLoader B's Service.class.
+
+**Fix.** Relocate the service interface and provider under each plugin's namespace, or place the API in a common shared library plugin.
+
+**Source.** META-INF/services provider interfaces and Bukkit ServicesManager registration types compared across installed plugins
+
+### S034 - Custom Bukkit Event class shaded across multiple plugins causes dropped events
+
+`critical`
+
+**Why it matters.** Bukkit custom Event classes define static getHandlerList() and getHandlers() methods. When two plugins shade the same custom Event class unrelocated, each plugin's classloader has a separate HandlerList instance. An event fired by Plugin A will never trigger @EventHandler listeners registered in Plugin B, causing silent event dropping.
+
+**Fix.** Relocate custom Event classes or share them through a single common API dependency with join-classpath: true or depend.
+
+**Source.** Classes extending org.bukkit.event.Event or declaring static HandlerList getHandlerList() compared across installed jars
 
 ### S040 - Java release required by this plugin set
 

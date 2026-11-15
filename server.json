@@ -1,0 +1,10 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.SalyyS1/pluginscope",
+  "description": "Offline ASM bytecode, Paper 26.3 classloader isolation, transitive shading collision, and async scheduler leak MCP server.",
+  "version": "0.4.0",
+  "repository": {
+    "url": "https://github.com/SalyyS1/pluginscope",
+    "source": "github"
+  }
+}

@@ -33,6 +33,7 @@ class JarAuditor(private val options: JarAuditOptions = JarAuditOptions()) {
         DescriptorChecks.run(jar, sink)
         BundlingChecks.run(jar, options.targetJava, sink)
         HygieneChecks.run(jar, sink)
+        LifecycleChecks.run(path, jar, sink)
         suggestRuntimeLibraries(jar, sink)
         if (options.reachability) reportReachability(path, jar, sink)
 

@@ -299,6 +299,56 @@ object JarRules {
         fix = "Verify the claim with a Folia-specific analyser before shipping it.",
     )
 
+    val UNCANCELLED_SCHEDULER_TASK = Rule(
+        id = "J070",
+        severity = Severity.WARNING,
+        title = "Scheduled task handle is leaked or accumulated without cancellation",
+        rationale = "Repeating scheduler tasks whose BukkitTask or ScheduledTask handle is discarded in " +
+            "dynamic code paths or accumulated in static fields and collections without cancellation or " +
+            "clearing in onDisable continue accumulating callbacks, retaining captured listener and world state.",
+        provenance = "PaperMC/Paper BukkitScheduler, AsyncScheduler, and RegionScheduler task lifecycle contracts",
+        fix = "Retain the returned BukkitTask or ScheduledTask handle, cancel repeating tasks when work finishes " +
+            "or in onDisable, and clear static task collections during plugin shutdown.",
+    )
+
+    val UNMANAGED_THREAD_OR_EXECUTOR_LEAK = Rule(
+        id = "J071",
+        severity = Severity.CRITICAL,
+        title = "Unmanaged ExecutorService, Timer, or Thread started without onDisable shutdown",
+        rationale = "Bukkit and Paper only cancel tasks submitted through server scheduler APIs. Raw " +
+            "ExecutorService pools, java.util.Timer threads, and java.lang.Thread instances inherit " +
+            "PaperPluginClassLoader as their contextClassLoader and remain live JVM GC roots across " +
+            "plugin disable or reload unless explicitly shut down.",
+        provenance = "PaperMC/Paper PaperPluginClassLoader lifecycle and JVM live-thread GC root semantics",
+        fix = "Shut down custom ExecutorService instances (shutdown or shutdownNow), cancel java.util.Timer " +
+            "instances in onDisable, or migrate background work to BukkitScheduler and AsyncScheduler.",
+    )
+
+    val STATIC_SERVER_ENTITY_RETENTION = Rule(
+        id = "J072",
+        severity = Severity.WARNING,
+        title = "Static field or collection retains live Player, Entity, World, or Chunk instances",
+        rationale = "Strong static references to live server lifecycle objects (Player, Entity, World, Chunk, " +
+            "BlockState) prevent the JVM from garbage-collecting disconnected players and unloaded ServerLevel " +
+            "chunk graphs until the static reference is cleared.",
+        provenance = "PaperMC/Paper ServerPlayer and ServerLevel unload lifecycle",
+        fix = "Key caches by UUID or NamespacedKey instead of live Entity or World references, use WeakHashMap, " +
+            "or clear the static field in onDisable and disconnect or unload event handlers.",
+    )
+
+    val CLASSLOADER_PINNING_HOOK = Rule(
+        id = "J073",
+        severity = Severity.CRITICAL,
+        title = "JVM hook or unremoved static ThreadLocal pins the plugin classloader",
+        rationale = "Registering Runtime.addShutdownHook, DriverManager.registerDriver, or JUL Logger.addHandler " +
+            "without deregistration in onDisable, or storing values in a static ThreadLocal without calling " +
+            "ThreadLocal.remove(), anchors PaperPluginClassLoader inside JVM global structures or shared " +
+            "server and Netty thread maps.",
+        provenance = "java.lang.ApplicationShutdownHooks, java.sql.DriverManager, and java.lang.ThreadLocalMap classloader retention",
+        fix = "Deregister shutdown hooks, JDBC drivers, and log handlers inside onDisable, and always invoke " +
+            "ThreadLocal.remove() in a finally block.",
+    )
+
     val all = listOf(
         NOT_A_PLUGIN, DESCRIPTOR_INCOMPLETE, DESCRIPTOR_UNPARSEABLE, MAIN_CLASS_MISSING, NAME_ILLEGAL,
         MAIN_IN_SERVER_NAMESPACE, DESCRIPTOR_UNKNOWN_KEY, API_VERSION_ABSENT, API_VERSION_UNKNOWN,
@@ -307,5 +357,7 @@ object JarRules {
         UNRELOCATED_LIBRARY, KOTLIN_STDLIB_BUNDLED, BSTATS_UNRELOCATED, LEGACY_VERSIONED_NMS_ON_MODERN_PAPER,
         MOJANG_MAPPED_BYTECODE_IN_LEGACY_DESCRIPTOR, JAR_HYGIENE, SIGNATURE_LEFTOVER, DEPENDENCY_SUSPECT,
         RUNTIME_LIBRARIES_HINT, PAPER_DESCRIPTOR_DRIFT, UNREACHABLE_BUNDLE, FOLIA_DECLARATION,
+        UNCANCELLED_SCHEDULER_TASK, UNMANAGED_THREAD_OR_EXECUTOR_LEAK,
+        STATIC_SERVER_ENTITY_RETENTION, CLASSLOADER_PINNING_HOOK,
     )
 }
