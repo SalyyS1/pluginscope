@@ -266,6 +266,23 @@ object StackRules {
             "or align library versions across plugins.",
     )
 
+    val EVENT_PRIORITY_CANCEL_RACE = Rule(
+        id = "S072",
+        severity = Severity.CRITICAL,
+        title = "Cross-plugin EventPriority MONITOR mutation or uncoordinated cancel race",
+        rationale = "Bukkit and Paper dispatch @EventHandler listeners in ascending EventPriority order (LOWEST, LOW, " +
+            "NORMAL, HIGH, HIGHEST, MONITOR), reserving MONITOR strictly for read-only outcome observation. When a " +
+            "plugin calls setCancelled or mutates event outcome inside a MONITOR handler while other installed plugins " +
+            "listen to the same event, audit and protection plugins observe inconsistent state depending on load order. " +
+            "Likewise, when multiple plugins mutate setCancelled at the same priority without a declared load-order " +
+            "dependency, or force setCancelled(false) at HIGH/HIGHEST with ignoreCancelled=false against another " +
+            "plugin's cancellation, event resolution races across restarts.",
+        provenance = "PaperMC/Paper HandlerList priority dispatch contract and @EventHandler annotation semantics",
+        fix = "Move event cancellation and outcome mutations to HIGHEST or lower (never MONITOR), set ignoreCancelled = true " +
+            "on downstream handlers that should respect protection cancellations, and declare explicit BEFORE/AFTER or " +
+            "loadbefore ordering when two plugins intentionally arbitrate the same event.",
+    )
+
     val all = listOf(
         MISSING_HARD_DEPENDENCY, DEPENDENCY_CYCLE, UNDECLARED_PLUGIN_DEPENDENCY,
         ISOLATED_CLASSLOADER_BLOCKED, PAPER_BOOTSTRAP_TARGETS_LEGACY_PLUGIN,
@@ -275,6 +292,6 @@ object StackRules {
         SHARED_LIBRARY_DUPLICATED, TRANSITIVE_SHADING_COLLISION, SERVICE_PROVIDER_SHADING_CONFLICT,
         EVENT_HANDLER_SHADING_CONFLICT, JAVA_REQUIREMENT,
         LEGACY_PLUGIN_PRESENT, MISSING_SOFT_DEPENDENCY, FOLIA_MIX, CROSS_PLUGIN_DATAFLOW_LEAK,
-        MULTI_RELEASE_CLASS_COLLISION,
+        MULTI_RELEASE_CLASS_COLLISION, EVENT_PRIORITY_CANCEL_RACE,
     )
 }

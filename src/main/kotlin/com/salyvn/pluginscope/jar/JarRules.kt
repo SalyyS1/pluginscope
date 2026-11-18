@@ -409,6 +409,36 @@ object JarRules {
             "userdev Mojang mappings with ReflectionRemapper utilities.",
     )
 
+    val PAPER_26_BLOCK_STATE_CODEC_HAZARD = Rule(
+        id = "J077",
+        severity = Severity.CRITICAL,
+        title = "Paper 26.3 block state or data component codec hazard in bytecode",
+        rationale = "Paper 1.21.4+..26.3+ freezes BuiltInRegistries (DATA_COMPONENT_TYPE, BLOCK, BLOCK_ENTITY_TYPE) " +
+            "before plugin initialization and replaces legacy numeric block-state byte metadata with typed BlockData " +
+            "and DataComponentMap codecs. Mutating MappedRegistry or invoking Registry.register at runtime corrupts " +
+            "clientbound RegistrySynchronization packets, calling legacy BlockState#setRawData or MaterialData fails " +
+            "on modern Paper, and mutating detached Block#getState() snapshots without calling BlockState#update(...) " +
+            "silently discards component and tile-entity state writes.",
+        provenance = "PaperMC/Paper MappedRegistry freeze lifecycle, Block#getState() snapshot contract, and DataComponentTypes API",
+        fix = "Use Paper's RegistryBootstrapEntrypoint and DataComponentTypes API instead of runtime MappedRegistry " +
+            "mutation, migrate legacy setRawData/MaterialData calls to BlockData, and invoke state.update() (or use " +
+            "block.getState(false) on Paper) when mutating TileState or BlockState snapshots.",
+    )
+
+    val ASM_CLASSWRITER_COMPUTE_FRAMES_HAZARD = Rule(
+        id = "J078",
+        severity = Severity.CRITICAL,
+        title = "ASM ClassWriter instantiated with COMPUTE_FRAMES without custom getCommonSuperClass",
+        rationale = "org.objectweb.asm.ClassWriter#getCommonSuperClass resolves merge-frame supertypes via " +
+            "Class.forName(..., false, getClass().getClassLoader()). Inside an isolated PaperPluginClassLoader or " +
+            "shaded library classloader on Java 21/25, default ClassWriter(ClassWriter.COMPUTE_FRAMES) throws " +
+            "TypeNotPresentException or ClassNotFoundException and can trigger premature class initialization when " +
+            "computing StackMapTable frames across foreign plugin, server, or dynamically generated classes.",
+        provenance = "OW2 ASM ClassWriter#getCommonSuperClass implementation and PaperPluginClassLoader isolation semantics",
+        fix = "Subclass ClassWriter and override getCommonSuperClass(String, String) using bytecode metadata or the " +
+            "plugin's target ClassLoader without Class.forName, or emit explicit frames with ClassWriter(0) / COMPUTE_MAXS.",
+    )
+
     val all = listOf(
         NOT_A_PLUGIN, DESCRIPTOR_INCOMPLETE, DESCRIPTOR_UNPARSEABLE, MAIN_CLASS_MISSING, NAME_ILLEGAL,
         MAIN_IN_SERVER_NAMESPACE, DESCRIPTOR_UNKNOWN_KEY, API_VERSION_ABSENT, API_VERSION_UNKNOWN,
@@ -420,5 +450,6 @@ object JarRules {
         FOLIA_DECLARATION, UNCANCELLED_SCHEDULER_TASK, UNMANAGED_THREAD_OR_EXECUTOR_LEAK,
         STATIC_SERVER_ENTITY_RETENTION, CLASSLOADER_PINNING_HOOK, CROSS_PLUGIN_HOOK_OR_PIPELINE_LEAK,
         PAPER_PLUGIN_REMAPPER_HAZARD, UNRELOCATED_NMS_REFLECTION_LITERAL,
+        PAPER_26_BLOCK_STATE_CODEC_HAZARD, ASM_CLASSWRITER_COMPUTE_FRAMES_HAZARD,
     )
 }

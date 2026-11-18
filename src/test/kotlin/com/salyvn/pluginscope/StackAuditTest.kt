@@ -660,4 +660,186 @@ class StackAuditTest {
         assertTrue(finding.location.contains("com.acme.util.FastCodec")) { finding.location }
         assertTrue(finding.detail.contains("Multi-Release")) { finding.detail }
     }
+
+    private fun buildEventListenerClass(
+        internalName: String,
+        eventInternalName: String,
+        priority: String = "NORMAL",
+        ignoreCancelled: Boolean = false,
+        setCancelledConst: Int? = null,
+    ): ByteArray {
+        val cw = ClassWriter(0)
+        cw.visit(65, Opcodes.ACC_PUBLIC, internalName, null, "java/lang/Object", arrayOf("org/bukkit/event/Listener"))
+        cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+            visitCode()
+            visitVarInsn(Opcodes.ALOAD, 0)
+            visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+            visitInsn(Opcodes.RETURN)
+            visitMaxs(1, 1)
+            visitEnd()
+        }
+        cw.visitMethod(Opcodes.ACC_PUBLIC, "onEvent", "(L$eventInternalName;)V", null, null).apply {
+            visitAnnotation("Lorg/bukkit/event/EventHandler;", true).apply {
+                visitEnum("priority", "Lorg/bukkit/event/EventPriority;", priority)
+                visit("ignoreCancelled", ignoreCancelled)
+                visitEnd()
+            }
+            visitCode()
+            if (setCancelledConst != null) {
+                visitVarInsn(Opcodes.ALOAD, 1)
+                visitInsn(if (setCancelledConst == 1) Opcodes.ICONST_1 else Opcodes.ICONST_0)
+                visitMethodInsn(Opcodes.INVOKEVIRTUAL, eventInternalName, "setCancelled", "(Z)V", false)
+            }
+            visitInsn(Opcodes.RETURN)
+            visitMaxs(2, 2)
+            visitEnd()
+        }
+        cw.visitEnd()
+        return cw.toByteArray()
+    }
+
+    @Test
+    fun `EventPriority MONITOR handler calling setCancelled across listening plugins reports S072 critical`(@TempDir directory: Path) {
+        val auditJar = FixtureJars.pluginJar(
+            jarName = "BlockAudit",
+            descriptor = FixtureJars.descriptor("BlockAudit", "com.example.audit.AuditListener", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf(
+                "com/example/audit/AuditListener.class" to buildEventListenerClass(
+                    internalName = "com/example/audit/AuditListener",
+                    eventInternalName = "org/bukkit/event/block/BlockBreakEvent",
+                    priority = "MONITOR",
+                    ignoreCancelled = true,
+                    setCancelledConst = null,
+                ),
+            ),
+        )
+        val rogueMonitorJar = FixtureJars.pluginJar(
+            jarName = "RogueTax",
+            descriptor = FixtureJars.descriptor("RogueTax", "com.example.rogue.RogueMonitor", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf(
+                "com/example/rogue/RogueMonitor.class" to buildEventListenerClass(
+                    internalName = "com/example/rogue/RogueMonitor",
+                    eventInternalName = "org/bukkit/event/block/BlockBreakEvent",
+                    priority = "MONITOR",
+                    ignoreCancelled = false,
+                    setCancelledConst = 1,
+                ),
+            ),
+        )
+        install(directory, auditJar, rogueMonitorJar)
+        val report = audit(directory)
+        val finding = report.findings.firstOrNull { it.ruleId == "S072" && it.severity == Severity.CRITICAL }
+        assertTrue(finding != null) { "expected critical S072 in ${report.findings.map { it.ruleId }}" }
+        assertTrue(finding!!.detail.contains("MONITOR")) { finding.detail }
+        assertTrue(finding.detail.contains("BlockAudit")) { finding.detail }
+    }
+
+    @Test
+    fun `HIGHEST listener forcing setCancelled false overrides protection plugin as S072 warning`(@TempDir directory: Path) {
+        val guardJar = FixtureJars.pluginJar(
+            jarName = "ClaimGuard",
+            descriptor = FixtureJars.descriptor("ClaimGuard", "com.example.claim.GuardListener", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf(
+                "com/example/claim/GuardListener.class" to buildEventListenerClass(
+                    internalName = "com/example/claim/GuardListener",
+                    eventInternalName = "org/bukkit/event/block/BlockBreakEvent",
+                    priority = "LOW",
+                    ignoreCancelled = false,
+                    setCancelledConst = 1,
+                ),
+            ),
+        )
+        val pickaxeJar = FixtureJars.pluginJar(
+            jarName = "ExplosivePick",
+            descriptor = FixtureJars.descriptor("ExplosivePick", "com.example.pick.PickListener", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf(
+                "com/example/pick/PickListener.class" to buildEventListenerClass(
+                    internalName = "com/example/pick/PickListener",
+                    eventInternalName = "org/bukkit/event/block/BlockBreakEvent",
+                    priority = "HIGHEST",
+                    ignoreCancelled = false,
+                    setCancelledConst = 0,
+                ),
+            ),
+        )
+        install(directory, guardJar, pickaxeJar)
+        val report = audit(directory)
+        val finding = report.findings.firstOrNull { it.ruleId == "S072" }
+        assertTrue(finding != null) { "expected S072 warning in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.WARNING, finding!!.severity)
+        assertTrue(finding.detail.contains("setCancelled(false)")) { finding.detail }
+    }
+
+    @Test
+    fun `same priority cancel race without load order edge reports S072 warning while explicit ordering suppresses it`(@TempDir directory: Path) {
+        val aJar = FixtureJars.pluginJar(
+            jarName = "CombatA",
+            descriptor = FixtureJars.descriptor("CombatA", "com.example.ca.CombatAListener", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf(
+                "com/example/ca/CombatAListener.class" to buildEventListenerClass(
+                    internalName = "com/example/ca/CombatAListener",
+                    eventInternalName = "org/bukkit/event/entity/EntityDamageByEntityEvent",
+                    priority = "HIGH",
+                    ignoreCancelled = false,
+                    setCancelledConst = 1,
+                ),
+            ),
+        )
+        val bJar = FixtureJars.pluginJar(
+            jarName = "CombatB",
+            descriptor = FixtureJars.descriptor("CombatB", "com.example.cb.CombatBListener", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf(
+                "com/example/cb/CombatBListener.class" to buildEventListenerClass(
+                    internalName = "com/example/cb/CombatBListener",
+                    eventInternalName = "org/bukkit/event/entity/EntityDamageByEntityEvent",
+                    priority = "HIGH",
+                    ignoreCancelled = false,
+                    setCancelledConst = 0,
+                ),
+            ),
+        )
+        install(directory, aJar, bJar)
+        val unorderedReport = audit(directory)
+        assertTrue(unorderedReport.findings.any { it.ruleId == "S072" }) {
+            "expected S072 on unordered same-priority mutators"
+        }
+
+        // Now verify explicit load: AFTER dependency suppresses S072
+        java.nio.file.Files.deleteIfExists(directory.resolve(bJar.fileName))
+        val bOrderedJar = FixtureJars.pluginJar(
+            jarName = "CombatBOrdered",
+            descriptor = FixtureJars.descriptor(
+                "CombatB",
+                "com.example.cb.CombatBListener",
+                "26.3",
+                extraLines = listOf(
+                    "dependencies:",
+                    "  server:",
+                    "    CombatA:",
+                    "      load: AFTER",
+                ),
+            ),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf(
+                "com/example/cb/CombatBListener.class" to buildEventListenerClass(
+                    internalName = "com/example/cb/CombatBListener",
+                    eventInternalName = "org/bukkit/event/entity/EntityDamageByEntityEvent",
+                    priority = "HIGH",
+                    ignoreCancelled = false,
+                    setCancelledConst = 0,
+                ),
+            ),
+        )
+        install(directory, bOrderedJar)
+        val orderedReport = audit(directory)
+        assertTrue(orderedReport.findings.none { it.ruleId == "S072" }) {
+            "unexpected S072 when explicit load: AFTER ordering is declared: ${orderedReport.findings}"
+        }
+    }
 }

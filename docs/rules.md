@@ -1,6 +1,6 @@
 # Rules
 
-Every check pluginscope can report, as printed by `pluginscope rules` in version 0.4.0.
+Every check pluginscope can report, as printed by `pluginscope rules` in version 0.7.0.
 Each rule carries the source of the fact behind it, so a finding can be argued with.
 
 Severities: `blocker` means the artifact does not load, `critical` means it loads and then
@@ -9,7 +9,7 @@ being claimed.
 
 ## pluginscope jar
 
-32 rules.
+38 rules.
 
 ### J001 - No plugin descriptor
 
@@ -271,6 +271,16 @@ being claimed.
 
 **Source.** PaperMC/Paper PaperPluginParent and PaperPluginClassLoader isolation rules
 
+### J043 - paper-plugin.yml dependency option, load order, or entrypoint collision
+
+`critical`
+
+**Why it matters.** Paper deserializes dependencies.<phase>.<Plugin> through Configurate DependencyConfiguration (accepting only load: BEFORE | AFTER | OMIT, boolean required, and boolean join-classpath) and instantiates PluginBootstrap and PluginLoader before Bukkit server state exists. Invalid load enums abort plugin loading, colliding main/bootstrapper/loader classes trigger initialization crashes, and contradictory BEFORE vs AFTER edges across bootstrap, server, or dual plugin.yml descriptors create unsatisfiable load-order constraints.
+
+**Fix.** Use BEFORE, AFTER, or OMIT for per-dependency load, STARTUP or POSTWORLD for root load, separate PluginBootstrap and PluginLoader from your JavaPlugin main class, and keep bootstrap/server/plugin.yml load directions consistent.
+
+**Source.** PaperMC/Paper DependencyConfiguration.LoadOrder, PaperPluginMeta, and PluginLoadOrder
+
 ### J050 - Most of a bundled library is never referenced
 
 `info`
@@ -361,6 +371,26 @@ being claimed.
 
 **Source.** LDC string constants in method bytecode compared against CraftBukkit and NMS package patterns
 
+### J077 - Paper 26.3 block state or data component codec hazard in bytecode
+
+`critical`
+
+**Why it matters.** Paper 1.21.4+..26.3+ freezes BuiltInRegistries (DATA_COMPONENT_TYPE, BLOCK, BLOCK_ENTITY_TYPE) before plugin initialization and replaces legacy numeric block-state byte metadata with typed BlockData and DataComponentMap codecs. Mutating MappedRegistry or invoking Registry.register at runtime corrupts clientbound RegistrySynchronization packets, calling legacy BlockState#setRawData or MaterialData fails on modern Paper, and mutating detached Block#getState() snapshots without calling BlockState#update(...) silently discards component and tile-entity state writes.
+
+**Fix.** Use Paper's RegistryBootstrapEntrypoint and DataComponentTypes API instead of runtime MappedRegistry mutation, migrate legacy setRawData/MaterialData calls to BlockData, and invoke state.update() (or use block.getState(false) on Paper) when mutating TileState or BlockState snapshots.
+
+**Source.** PaperMC/Paper MappedRegistry freeze lifecycle, Block#getState() snapshot contract, and DataComponentTypes API
+
+### J078 - ASM ClassWriter instantiated with COMPUTE_FRAMES without custom getCommonSuperClass
+
+`critical`
+
+**Why it matters.** org.objectweb.asm.ClassWriter#getCommonSuperClass resolves merge-frame supertypes via Class.forName(..., false, getClass().getClassLoader()). Inside an isolated PaperPluginClassLoader or shaded library classloader on Java 21/25, default ClassWriter(ClassWriter.COMPUTE_FRAMES) throws TypeNotPresentException or ClassNotFoundException and can trigger premature class initialization when computing StackMapTable frames across foreign plugin, server, or dynamically generated classes.
+
+**Fix.** Subclass ClassWriter and override getCommonSuperClass(String, String) using bytecode metadata or the plugin's target ClassLoader without Class.forName, or emit explicit frames with ClassWriter(0) / COMPUTE_MAXS.
+
+**Source.** OW2 ASM ClassWriter#getCommonSuperClass implementation and PaperPluginClassLoader isolation semantics
+
 ## pluginscope compat
 
 5 rules.
@@ -417,7 +447,7 @@ being claimed.
 
 ## pluginscope stack
 
-18 rules.
+24 rules.
 
 ### S001 - Hard dependency is not installed
 
@@ -648,6 +678,16 @@ being claimed.
 **Fix.** Relocate shaded Multi-Release dependencies, ensure Multi-Release: true is preserved in manifest attributes, or align library versions across plugins.
 
 **Source.** JEP 238 Multi-Release JAR files, java.util.jar.JarFile versioning, and PaperPluginClassLoader classpath isolation
+
+### S072 - Cross-plugin EventPriority MONITOR mutation or uncoordinated cancel race
+
+`critical`
+
+**Why it matters.** Bukkit and Paper dispatch @EventHandler listeners in ascending EventPriority order (LOWEST, LOW, NORMAL, HIGH, HIGHEST, MONITOR), reserving MONITOR strictly for read-only outcome observation. When a plugin calls setCancelled or mutates event outcome inside a MONITOR handler while other installed plugins listen to the same event, audit and protection plugins observe inconsistent state depending on load order. Likewise, when multiple plugins mutate setCancelled at the same priority without a declared load-order dependency, or force setCancelled(false) at HIGH/HIGHEST with ignoreCancelled=false against another plugin's cancellation, event resolution races across restarts.
+
+**Fix.** Move event cancellation and outcome mutations to HIGHEST or lower (never MONITOR), set ignoreCancelled = true on downstream handlers that should respect protection cancellations, and declare explicit BEFORE/AFTER or loadbefore ordering when two plugins intentionally arbitrate the same event.
+
+**Source.** PaperMC/Paper HandlerList priority dispatch contract and @EventHandler annotation semantics
 
 ## pluginscope pack
 

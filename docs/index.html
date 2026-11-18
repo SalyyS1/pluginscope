@@ -347,7 +347,7 @@
     </div>
     <div class="nav-links">
       <a class="pill-link" href="https://github.com/SalyyS1/pluginscope">GitHub Repository</a>
-      <a class="pill-link" href="https://github.com/SalyyS1/pluginscope/releases/latest">Download CLI v0.6.0</a>
+      <a class="pill-link" href="https://github.com/SalyyS1/pluginscope/releases/latest">Download CLI v0.7.0</a>
       <a class="pill-link" href="https://salyys1.github.io/foliascan/">FoliaScan</a>
       <a class="pill-link" href="https://salyys1.github.io/serverdoctor/">ServerDoctor</a>
     </div>
@@ -357,16 +357,17 @@
     <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Select one or more plugin JAR files">
       <input type="file" id="fileInput" accept=".jar,.zip" multiple style="display:none">
       <h2>Drop one `.jar` or an entire `plugins/` set of `.jar` files here</h2>
-      <p>Drop a single JAR for packaging, descriptor drift, and async scheduler/classloader leak checks, or drop 2+ JARs to audit cross-plugin classloader isolation and transitive shading collisions.</p>
+      <p>Drop a single JAR for packaging, descriptor drift, Paper 26.3 codec/ASM frame verification, and async leak checks, or drop 2+ JARs to audit cross-plugin classloader isolation, EventPriority cancel races, and transitive shading collisions.</p>
     </div>
 
     <div class="preset-box">
       <div>
         <h3>Interactive In-Browser Binary Demos</h3>
-        <p>Synthesizes valid `.jar` archives with JVM `.class` constant pools in memory and runs the binary inspector.</p>
+        <p>Synthesizes valid `.jar` archives with JVM `.class` constant pools and method bytecode in memory and runs the binary inspector.</p>
       </div>
       <div class="btn-row">
-        <button class="primary" id="btnDemoV060" type="button">Demo: PluginRemapper &amp; Multi-Release Collision (v0.6.0)</button>
+        <button class="primary" id="btnDemoV070" type="button">Demo: Paper 26.3 Codecs, ASM Frames &amp; EventPriority Race (v0.7.0)</button>
+        <button id="btnDemoV060" type="button">Demo: PluginRemapper &amp; Multi-Release Collision (v0.6.0)</button>
         <button id="btnDemoV050" type="button">Demo: Cross-Plugin Leak &amp; Multi-Loader Graph (v0.5.0)</button>
         <button id="btnDemoStack" type="button">Demo: 3-JAR Shading &amp; Paper Classloader Collision</button>
         <button id="btnDemoSingle" type="button">Demo: Single-JAR Unrelocated bStats + Drift</button>
@@ -431,7 +432,7 @@
   </div>
 
   <footer>
-    <div>PluginScope v0.6.0 | Pure client-side ZIP central directory + JVM bytecode constant-pool and cross-plugin lifecycle inspector (Apache-2.0)</div>
+    <div>PluginScope v0.7.0 | Pure client-side ZIP central directory + JVM bytecode constant-pool and cross-plugin lifecycle inspector (Apache-2.0)</div>
     <div>Companion tools: <a href="https://github.com/SalyyS1/foliascan">foliascan</a> | <a href="https://github.com/SalyyS1/serverdoctor">serverdoctor</a> | <a href="https://github.com/SalyyS1/minecraftkit">minecraftkit</a></div>
   </footer>
 </div>
@@ -614,7 +615,7 @@
         case 10: case 11: { // CONSTANT_Methodref / CONSTANT_InterfaceMethodref
           const classIndex = view.getUint16(offset, false);
           const ntIndex = view.getUint16(offset + 2, false);
-          methodRefEntries.push({ classIndex, ntIndex });
+          methodRefEntries.push({ cpIndex: idx, classIndex, ntIndex });
           offset += 4;
           break;
         }
@@ -626,7 +627,13 @@
           offset += 4;
           break;
         }
-        case 3: case 4: case 9: case 17: case 18:
+        case 3: { // CONSTANT_Integer
+          const intVal = view.getInt32(offset, false);
+          utf8Pool[idx] = intVal;
+          offset += 4;
+          break;
+        }
+        case 4: case 9: case 17: case 18:
           offset += 4;
           break;
         case 5: case 6:
@@ -648,13 +655,18 @@
     }
 
     const methodCalls = [];
+    const methodRefByCp = new Map();
     for (const mr of methodRefEntries) {
       const owner = classByCp.get(mr.classIndex);
       const nt = nameAndTypePool.get(mr.ntIndex);
       if (owner && nt) {
-        const mName = utf8Pool[nt.nameIndex] || "";
-        const mDesc = utf8Pool[nt.descIndex] || "";
-        if (mName) methodCalls.push({ owner, name: mName, desc: mDesc });
+        const mName = String(utf8Pool[nt.nameIndex] || "");
+        const mDesc = String(utf8Pool[nt.descIndex] || "");
+        if (mName) {
+          const entry = { owner, name: mName, desc: mDesc };
+          methodCalls.push(entry);
+          if (mr.cpIndex) methodRefByCp.set(mr.cpIndex, entry);
+        }
       }
     }
 
@@ -664,6 +676,9 @@
     let methodsCount = 0;
     const staticFields = [];
     const declaredMethods = [];
+    const eventHandlers = [];
+    const computeFramesInits = [];
+    const detachedStateMutations = [];
     if (offset + 6 <= u8.byteLength) {
       const thisCp = view.getUint16(offset + 2, false);
       const superCp = view.getUint16(offset + 4, false);
@@ -676,16 +691,16 @@
         memberPos += 2;
         for (let f = 0; f < fieldsCount && memberPos + 8 <= u8.byteLength; f++) {
           const fAccess = view.getUint16(memberPos, false);
-          const fName = utf8Pool[view.getUint16(memberPos + 2, false)] || "";
-          const fDesc = utf8Pool[view.getUint16(memberPos + 4, false)] || "";
+          const fName = String(utf8Pool[view.getUint16(memberPos + 2, false)] || "");
+          const fDesc = String(utf8Pool[view.getUint16(memberPos + 4, false)] || "");
           const attrCount = view.getUint16(memberPos + 6, false);
           let fSig = "";
           memberPos += 8;
           for (let a = 0; a < attrCount && memberPos + 6 <= u8.byteLength; a++) {
-            const attrName = utf8Pool[view.getUint16(memberPos, false)] || "";
+            const attrName = String(utf8Pool[view.getUint16(memberPos, false)] || "");
             const attrLen = view.getUint32(memberPos + 2, false);
             if (attrName === "Signature" && attrLen >= 2 && memberPos + 8 <= u8.byteLength) {
-              fSig = utf8Pool[view.getUint16(memberPos + 6, false)] || "";
+              fSig = String(utf8Pool[view.getUint16(memberPos + 6, false)] || "");
             }
             memberPos += 6 + attrLen;
           }
@@ -697,14 +712,147 @@
           methodsCount = view.getUint16(memberPos, false);
           memberPos += 2;
           for (let m = 0; m < methodsCount && memberPos + 8 <= u8.byteLength; m++) {
-            const mName = utf8Pool[view.getUint16(memberPos + 2, false)] || "";
-            const mDesc = utf8Pool[view.getUint16(memberPos + 4, false)] || "";
+            const mName = String(utf8Pool[view.getUint16(memberPos + 2, false)] || "");
+            const mDesc = String(utf8Pool[view.getUint16(memberPos + 4, false)] || "");
             const attrCount = view.getUint16(memberPos + 6, false);
             if (mName) declaredMethods.push(mName + mDesc);
             memberPos += 8;
+            let ehInfo = null;
+            let codeStart = -1;
+            let codeLen = 0;
             for (let a = 0; a < attrCount && memberPos + 6 <= u8.byteLength; a++) {
+              const attrName = String(utf8Pool[view.getUint16(memberPos, false)] || "");
               const attrLen = view.getUint32(memberPos + 2, false);
+              if (attrName === "Code" && attrLen >= 12 && memberPos + 18 <= u8.byteLength) {
+                codeLen = view.getUint32(memberPos + 14, false);
+                codeStart = memberPos + 18;
+              } else if (attrName === "RuntimeVisibleAnnotations" && attrLen >= 2 && memberPos + 8 <= u8.byteLength) {
+                let ap = memberPos + 6;
+                const endAp = ap + attrLen;
+                const numAnn = view.getUint16(ap, false);
+                ap += 2;
+                for (let na = 0; na < numAnn && ap + 4 <= endAp; na++) {
+                  const typeDesc = String(utf8Pool[view.getUint16(ap, false)] || "");
+                  const numPairs = view.getUint16(ap + 2, false);
+                  ap += 4;
+                  if (typeDesc === "Lorg/bukkit/event/EventHandler;") {
+                    ehInfo = { priority: "NORMAL", ignoreCancelled: false };
+                    for (let np = 0; np < numPairs && ap + 3 <= endAp; np++) {
+                      const elemName = String(utf8Pool[view.getUint16(ap, false)] || "");
+                      const tag = u8[ap + 2];
+                      ap += 3;
+                      if (tag === 101 && ap + 4 <= endAp) { // 'e' enum_const_value
+                        const constVal = String(utf8Pool[view.getUint16(ap + 2, false)] || "");
+                        if (elemName === "priority" && constVal) ehInfo.priority = constVal;
+                        ap += 4;
+                      } else if (tag === 90 && ap + 2 <= endAp) { // 'Z' boolean const
+                        const intConst = utf8Pool[view.getUint16(ap, false)];
+                        if (elemName === "ignoreCancelled") ehInfo.ignoreCancelled = Boolean(intConst);
+                        ap += 2;
+                      } else {
+                        ap = endAp;
+                        break;
+                      }
+                    }
+                  } else {
+                    ap = endAp;
+                    break;
+                  }
+                }
+              }
               memberPos += 6 + attrLen;
+            }
+            if (codeStart > 0 && codeStart + codeLen <= u8.byteLength) {
+              let lastInt = null;
+              let sawDetachedGetState = false;
+              let sawStateMutation = null;
+              let sawStateUpdateOrReturn = false;
+              let cancelMutation = "NONE";
+              let cancelCall = null;
+              let pc = codeStart;
+              const codeEnd = codeStart + codeLen;
+              while (pc < codeEnd) {
+                const op = u8[pc];
+                if (op >= 0x02 && op <= 0x08) { // iconst_m1..iconst_5
+                  lastInt = op - 0x03;
+                  pc += 1;
+                } else if (op === 0x10 && pc + 1 < codeEnd) { // bipush
+                  lastInt = (u8[pc + 1] << 24) >> 24;
+                  pc += 2;
+                } else if (op === 0x11 && pc + 2 < codeEnd) { // sipush
+                  lastInt = view.getInt16(pc + 1, false);
+                  pc += 3;
+                } else if (op === 0xb0) { // areturn
+                  sawStateUpdateOrReturn = true;
+                  lastInt = null;
+                  pc += 1;
+                } else if ((op === 0xb6 || op === 0xb7 || op === 0xb8 || op === 0xb9) && pc + 2 < codeEnd) {
+                  const cpRef = view.getUint16(pc + 1, false);
+                  const target = methodRefByCp.get(cpRef);
+                  if (target) {
+                    if (op === 0xb7 && target.name === "<init>" && target.desc === "(I)V" &&
+                        (target.owner === "org/objectweb/asm/ClassWriter" || target.owner.endsWith("/asm/ClassWriter")) &&
+                        typeof lastInt === "number" && (lastInt & 2) !== 0) {
+                      computeFramesInits.push({ method: mName, owner: target.owner, flags: lastInt });
+                    }
+                    if (target.owner === "org/bukkit/block/Block" && target.name === "getState" && target.desc === "()Lorg/bukkit/block/BlockState;") {
+                      sawDetachedGetState = true;
+                    }
+                    if (target.name === "update" && target.desc.endsWith(")Z")) {
+                      sawStateUpdateOrReturn = true;
+                    }
+                    if (sawDetachedGetState && (
+                        (target.owner === "org/bukkit/persistence/PersistentDataContainer" && (target.name === "set" || target.name === "remove")) ||
+                        target.name === "setBlockData" || target.name === "setOwningPlayer" || target.name === "setSpawnedType" || target.name === "setLine"
+                    )) {
+                      sawStateMutation = `${target.owner.split("/").pop()}#${target.name}`;
+                    }
+                    if (target.name === "setCancelled" && target.desc === "(Z)V") {
+                      if (lastInt === 1) {
+                        cancelMutation = "CANCEL_TRUE";
+                        cancelCall = `${target.owner.split("/").pop()}#setCancelled(true)`;
+                      } else if (lastInt === 0) {
+                        cancelMutation = "UNCANCEL_FALSE";
+                        cancelCall = `${target.owner.split("/").pop()}#setCancelled(false)`;
+                      } else {
+                        cancelMutation = "CANCEL_DYNAMIC";
+                        cancelCall = `${target.owner.split("/").pop()}#setCancelled(boolean)`;
+                      }
+                    } else if (target.name === "setResult" || target.name === "disallow") {
+                      cancelMutation = "RESULT_MUTATION";
+                      cancelCall = `${target.owner.split("/").pop()}#${target.name}`;
+                    }
+                  }
+                  lastInt = null;
+                  pc += (op === 0xb9) ? 5 : 3;
+                } else if (op === 0x12) {
+                  lastInt = null; pc += 2;
+                } else if (op === 0x13 || op === 0x14 || op === 0xb2 || op === 0xb3 || op === 0xb4 || op === 0xb5 || op === 0xbb || op === 0xbd || op === 0xc0 || op === 0xc1) {
+                  lastInt = null; pc += 3;
+                } else if (op >= 0x15 && op <= 0x19) {
+                  lastInt = null; pc += 2;
+                } else if (op >= 0x36 && op <= 0x3a) {
+                  lastInt = null; pc += 2;
+                } else {
+                  lastInt = null; pc += 1;
+                }
+              }
+              if (sawDetachedGetState && sawStateMutation && !sawStateUpdateOrReturn) {
+                detachedStateMutations.push({ method: mName, mutator: sawStateMutation });
+              }
+              if (ehInfo) {
+                const evtMatch = /^\(L([^;]+);\)V$/.exec(mDesc);
+                if (evtMatch && evtMatch[1] !== "java/lang/Object") {
+                  eventHandlers.push({
+                    method: mName,
+                    eventInternalName: evtMatch[1],
+                    priority: ehInfo.priority,
+                    ignoreCancelled: ehInfo.ignoreCancelled,
+                    mutation: cancelMutation,
+                    mutationCall: cancelCall
+                  });
+                }
+              }
             }
           }
         }
@@ -723,7 +871,7 @@
     const stringConstants = [];
     for (const strIdx of stringRefIndices) {
       const s = utf8Pool[strIdx];
-      if (s && (s.includes("net.minecraft") || s.includes("net/minecraft") ||
+      if (typeof s === "string" && (s.includes("net.minecraft") || s.includes("net/minecraft") ||
                 s.includes("org.bukkit.craftbukkit") || s.includes("org/bukkit/craftbukkit"))) {
         stringConstants.push(s);
       }
@@ -731,7 +879,7 @@
 
     const isKotlin = utf8Pool.includes("Lkotlin/Metadata;");
     const abiSig = `${internalName}@${majorVersion}:f=${fieldsCount}:m=${methodsCount}:nt=${nameAndTypeCount.count}`;
-    return { internalName, superName, majorVersion, isKotlin, referencedClasses, staticFields, declaredMethods, methodCalls, stringConstants, abiSig };
+    return { internalName, superName, majorVersion, isKotlin, referencedClasses, staticFields, declaredMethods, methodCalls, stringConstants, eventHandlers, computeFramesInits, detachedStateMutations, abiSig };
   }
 
   // Lightweight safe parser for plugin.yml and paper-plugin.yml
@@ -1424,6 +1572,67 @@
           nmsLiterals.slice(0, 4),
           "Replace reflection string literals with compile-time Bukkit/Paper API calls or ReflectionRemapper utilities.");
       }
+
+      // J077: Paper 26.3 block state or data component codec hazard
+      const isModern26 = Boolean((d && d.apiVersion && (/^(2[5-9]|[3-9]\d)\./.test(d.apiVersion) || /^1\.(20\.[56]|21(\.|$))/.test(d.apiVersion))) || options.targetJava >= 21);
+      const frozenRegSites = jar.classes
+        .filter(c => jar.isOwnCode(c.internalName))
+        .flatMap(c => (c.methodCalls || [])
+          .filter(m => (m.owner === "net/minecraft/core/Registry" || m.owner === "net/minecraft/core/MappedRegistry" || m.owner === "net/minecraft/core/WritableRegistry") &&
+                       (m.name === "register" || m.name === "registerMapping" || m.name === "createIntrusiveHolder" || m.name === "unfreeze"))
+          .map(m => `${c.internalName.replace(/\//g, ".")} -> ${m.owner.replace(/\//g, ".")}#${m.name}`));
+      if (frozenRegSites.length > 0) {
+        add("J077", "critical", "Paper 26.3 block state or data component codec hazard in bytecode",
+          prefix + jar.fileName,
+          "Plugin mutates or registers into Mojang MappedRegistry / BuiltInRegistries at runtime. Paper 1.21.4+..26.3+ freezes registries before plugin load, corrupting clientbound RegistrySynchronization codecs.",
+          frozenRegSites.slice(0, 4),
+          "Use Paper's RegistryBootstrapEntrypoint and DataComponentTypes API instead of runtime MappedRegistry mutation.");
+      }
+      if (isModern26) {
+        const rawBlockSites = jar.classes
+          .filter(c => jar.isOwnCode(c.internalName))
+          .flatMap(c => (c.methodCalls || [])
+            .filter(m => ((m.owner === "org/bukkit/block/BlockState" || m.owner === "org/bukkit/block/Block") && (m.name === "setRawData" || m.name === "setData")) ||
+                         m.owner.startsWith("org/bukkit/material/MaterialData"))
+            .map(m => `${c.internalName.replace(/\//g, ".")} -> ${m.owner.replace(/\//g, ".")}#${m.name}`));
+        if (rawBlockSites.length > 0) {
+          add("J077", "critical", "Paper 26.3 block state or data component codec hazard in bytecode",
+            prefix + jar.fileName,
+            "Plugin invokes removed legacy numeric block-state byte or MaterialData APIs while targeting modern Paper. Block states on 1.20.5+..26.3+ require typed BlockData and DataComponentTypes codecs.",
+            rawBlockSites.slice(0, 4),
+            "Migrate legacy setRawData/MaterialData calls to typed BlockData and DataComponentTypes.");
+        }
+      }
+      for (const c of jar.classes.filter(x => jar.isOwnCode(x.internalName))) {
+        for (const dm of (c.detachedStateMutations || [])) {
+          const loc = `${prefix}${c.internalName.replace(/\//g, ".")}#${dm.method}`;
+          add("J077", "warning", "Paper 26.3 block state or data component codec hazard in bytecode",
+            loc,
+            `Detached Block#getState() snapshot is mutated (${dm.mutator}) without calling BlockState#update(...) or returning the snapshot, silently discarding tile-entity and component changes.`,
+            [`${c.internalName.replace(/\//g, ".")}#${dm.method}: Block#getState() -> ${dm.mutator} (no BlockState#update)`],
+            "Invoke state.update() (or use block.getState(false) on Paper) when mutating TileState or BlockState snapshots.");
+        }
+      }
+
+      // J078: ASM ClassWriter instantiated with COMPUTE_FRAMES without custom getCommonSuperClass
+      const safeCwClasses = new Set(
+        jar.classes
+          .filter(c => c.superName && (c.superName === "org/objectweb/asm/ClassWriter" || c.superName.endsWith("/asm/ClassWriter")) &&
+                       (c.declaredMethods || []).includes("getCommonSuperClass(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"))
+          .map(c => c.internalName)
+      );
+      for (const c of jar.classes) {
+        if (c.internalName.startsWith("org/objectweb/asm/") || c.internalName.endsWith("/asm/ClassWriter")) continue;
+        for (const hit of (c.computeFramesInits || [])) {
+          if (hit.method === "<init>" && safeCwClasses.has(c.internalName)) continue;
+          const loc = `${prefix}${c.internalName.replace(/\//g, ".")}#${hit.method}`;
+          add("J078", "critical", "ASM ClassWriter instantiated with COMPUTE_FRAMES without custom getCommonSuperClass",
+            loc,
+            "ASM ClassWriter is constructed with COMPUTE_FRAMES (flag bit 0x2) without overriding getCommonSuperClass(String, String). Default ClassWriter calls Class.forName on the defining classloader, failing across isolated PaperPluginClassLoader boundaries.",
+            [`${c.internalName.replace(/\//g, ".")}#${hit.method} -> new ${hit.owner.replace(/\//g, ".")}(flags=${hit.flags} [COMPUTE_FRAMES])`],
+            "Subclass ClassWriter and override getCommonSuperClass(String, String) using bytecode metadata or the target ClassLoader.");
+        }
+      }
     }
 
     // Multi-JAR Stack checks when 2+ plugin JARs are loaded
@@ -1913,6 +2122,85 @@
             `Multi-Release (MR-JAR) classfile collision for ${dotted} across ${distinctPlugins.length} plugins: ${distinctPlugins.join(", ")}. Mismatched JVM classloader resolution causes runtime linkage errors.`,
             variants.map(v => `${v.plugin.descriptor ? v.plugin.descriptor.name : v.plugin.fileName}: ${v.class.entryName} [${v.class.isMultiRelease ? "MR-JAR Java " + v.class.multiReleaseVersion : "Base Java " + majorToJava(v.class.majorVersion)}]`),
             "Relocate shaded Multi-Release dependencies, ensure Multi-Release: true is preserved in manifest attributes, or align library versions across plugins.");
+        }
+      }
+
+      // S072: Cross-plugin EventPriority MONITOR mutation or uncoordinated cancel race
+      const PRIO_RANK = { LOWEST: 0, LOW: 1, NORMAL: 2, HIGH: 3, HIGHEST: 4, MONITOR: 5 };
+      const orderedPairs = new Set();
+      for (const p of plugins) {
+        const self = p.descriptor.name.toLowerCase();
+        for (const dep of (p.descriptor.dependencies || [])) {
+          const target = byName.get(dep.name.toLowerCase());
+          if (!target) continue;
+          const tName = target.descriptor.name.toLowerCase();
+          if (tName === self) continue;
+          if (p.descriptor.kind === "paper-plugin.yml") {
+            if ((!dep.phase || dep.phase === "server") && (dep.load === "BEFORE" || dep.load === "AFTER")) {
+              orderedPairs.add([self, tName].sort().join("|"));
+            }
+          } else {
+            orderedPairs.add([self, tName].sort().join("|"));
+          }
+        }
+        for (const lb of (p.descriptor.loadBefore || [])) {
+          const target = byName.get(lb.toLowerCase());
+          if (target && target.descriptor.name.toLowerCase() !== self) {
+            orderedPairs.add([self, target.descriptor.name.toLowerCase()].sort().join("|"));
+          }
+        }
+      }
+
+      const handlersByEvent = new Map();
+      for (const p of plugins) {
+        for (const c of p.classes.filter(x => p.isOwnCode(x.internalName))) {
+          for (const eh of (c.eventHandlers || [])) {
+            if (!handlersByEvent.has(eh.eventInternalName)) handlersByEvent.set(eh.eventInternalName, []);
+            handlersByEvent.get(eh.eventInternalName).push({ plugin: p, cls: c, ...eh });
+          }
+        }
+      }
+
+      for (const [evtInternal, handlers] of handlersByEvent.entries()) {
+        const distinctP = Array.from(new Set(handlers.map(h => h.plugin.descriptor.name.toLowerCase())));
+        if (distinctP.length < 2) continue;
+        const evtShort = evtInternal.split("/").pop();
+        const evtDotted = evtInternal.replace(/\//g, ".");
+
+        for (const off of handlers.filter(h => h.priority === "MONITOR" && h.mutation !== "NONE")) {
+          const peers = handlers.filter(h => h.plugin.descriptor.name.toLowerCase() !== off.plugin.descriptor.name.toLowerCase());
+          if (peers.length === 0) continue;
+          add("S072", "critical",
+            "Cross-plugin EventPriority MONITOR mutation or uncoordinated cancel race",
+            `${evtShort}: ${off.plugin.descriptor.name} [MONITOR]`,
+            `${off.plugin.descriptor.name} mutates ${evtDotted} outcome (${off.mutationCall || "setCancelled"}) inside @EventHandler(priority = MONITOR) while ${Array.from(new Set(peers.map(x => x.plugin.descriptor.name))).join(", ")} also observe(s) ${evtShort}, violating Bukkit's read-only MONITOR contract.`,
+            [
+              `${off.plugin.descriptor.name} (${off.cls.internalName.split("/").pop()}#${off.method}) @MONITOR -> ${off.mutationCall || "setCancelled"}`,
+              `co-listening plugins: ${Array.from(new Set(peers.map(x => `${x.plugin.descriptor.name}@${x.priority}`))).join(", ")}`
+            ],
+            "Move event cancellation and outcome mutations to HIGHEST or lower (never MONITOR).");
+        }
+
+        const nonMon = handlers.filter(h => h.priority !== "MONITOR" && h.mutation !== "NONE");
+        const seenPairs = new Set();
+        for (const unc of nonMon.filter(h => h.mutation === "UNCANCEL_FALSE" && !h.ignoreCancelled && (PRIO_RANK[h.priority] ?? 2) >= 3)) {
+          for (const can of nonMon.filter(h => h.mutation === "CANCEL_TRUE" || h.mutation === "CANCEL_DYNAMIC")) {
+            const uName = unc.plugin.descriptor.name.toLowerCase();
+            const cName = can.plugin.descriptor.name.toLowerCase();
+            if (uName === cName || (PRIO_RANK[can.priority] ?? 2) > (PRIO_RANK[unc.priority] ?? 2)) continue;
+            const pk = [uName, cName].sort().join("|");
+            if (orderedPairs.has(pk) || seenPairs.has(pk)) continue;
+            seenPairs.add(pk);
+            add("S072", "warning",
+              "Cross-plugin EventPriority MONITOR mutation or uncoordinated cancel race",
+              `${evtShort}: ${can.plugin.descriptor.name} vs ${unc.plugin.descriptor.name}`,
+              `${unc.plugin.descriptor.name} (@${unc.priority}, ignoreCancelled=false) calls setCancelled(false) on ${evtDotted} without an explicit load-order dependency, overriding cancellations from ${can.plugin.descriptor.name} (@${can.priority}).`,
+              [
+                `${can.plugin.descriptor.name} @${can.priority} -> ${can.mutationCall || "setCancelled(true)"}`,
+                `${unc.plugin.descriptor.name} @${unc.priority} (ignoreCancelled=false) -> ${unc.mutationCall || "setCancelled(false)"}`
+              ],
+              "Set ignoreCancelled = true or declare explicit BEFORE/AFTER or loadbefore ordering.");
+          }
         }
       }
     }
@@ -2766,6 +3054,214 @@
     await handleFiles([coreJar, legacyJar]);
   });
 
+  // Helper to synthesize a valid 0xCAFEBABE class with custom bytecode and optional @EventHandler annotation for Demo 6 (v0.7.0)
+  function buildBytecodeDemoClass(spec) {
+    const enc = new TextEncoder();
+    const cpChunks = [];
+    let cpIndex = 1;
+    const utfIdx = {};
+    function u8str(s) {
+      if (utfIdx[s]) return utfIdx[s];
+      const raw = enc.encode(s);
+      const b = new Uint8Array(3 + raw.length);
+      b[0] = 1; b[1] = (raw.length >> 8) & 0xff; b[2] = raw.length & 0xff;
+      b.set(raw, 3);
+      cpChunks.push(b);
+      utfIdx[s] = cpIndex++;
+      return utfIdx[s];
+    }
+    function intConst(v) {
+      const b = new Uint8Array(5);
+      b[0] = 3;
+      new DataView(b.buffer).setInt32(1, v, false);
+      cpChunks.push(b);
+      return cpIndex++;
+    }
+    function clsRef(name) {
+      const u = u8str(name);
+      cpChunks.push(new Uint8Array([7, (u >> 8) & 0xff, u & 0xff]));
+      return cpIndex++;
+    }
+    function methodRef(owner, name, desc, isIface) {
+      const cIdx = clsRef(owner);
+      const nIdx = u8str(name);
+      const dIdx = u8str(desc);
+      cpChunks.push(new Uint8Array([12, (nIdx >> 8) & 0xff, nIdx & 0xff, (dIdx >> 8) & 0xff, dIdx & 0xff]));
+      const ntIdx = cpIndex++;
+      cpChunks.push(new Uint8Array([isIface ? 11 : 10, (cIdx >> 8) & 0xff, cIdx & 0xff, (ntIdx >> 8) & 0xff, ntIdx & 0xff]));
+      return cpIndex++;
+    }
+
+    const thisClassIdx = clsRef(spec.internalName);
+    const superClassIdx = clsRef("java/lang/Object");
+    const codeAttrName = u8str("Code");
+    const rvaAttrName = spec.eventHandler ? u8str("RuntimeVisibleAnnotations") : 0;
+    const ehDescIdx = spec.eventHandler ? u8str("Lorg/bukkit/event/EventHandler;") : 0;
+    const prioKeyIdx = spec.eventHandler ? u8str("priority") : 0;
+    const prioEnumDescIdx = spec.eventHandler ? u8str("Lorg/bukkit/event/EventPriority;") : 0;
+    const prioValIdx = spec.eventHandler ? u8str(spec.eventHandler.priority || "NORMAL") : 0;
+    const ignKeyIdx = spec.eventHandler ? u8str("ignoreCancelled") : 0;
+    const ignConstIdx = spec.eventHandler ? intConst(spec.eventHandler.ignoreCancelled ? 1 : 0) : 0;
+
+    const initName = u8str("<init>");
+    const voidDesc = u8str("()V");
+    const mNameIdx = u8str(spec.methodName || "execute");
+    const mDescIdx = u8str(spec.methodDesc || "()V");
+    const codeBytes = spec.buildCode({ methodRef });
+
+    const header = new Uint8Array(10);
+    const hv = new DataView(header.buffer);
+    hv.setUint32(0, 0xCAFEBABE, false);
+    hv.setUint16(6, 65, false);
+    hv.setUint16(8, cpIndex, false);
+
+    const clsTail = new Uint8Array(12);
+    const tv = new DataView(clsTail.buffer);
+    tv.setUint16(0, 0x0021, false);
+    tv.setUint16(2, thisClassIdx, false);
+    tv.setUint16(4, superClassIdx, false);
+    tv.setUint16(6, 0, false);
+    tv.setUint16(8, 0, false);
+    tv.setUint16(10, 2, false); // <init> + method
+
+    const initMethod = new Uint8Array(8 + 6 + 13);
+    const iv = new DataView(initMethod.buffer);
+    iv.setUint16(0, 0x0001, false);
+    iv.setUint16(2, initName, false);
+    iv.setUint16(4, voidDesc, false);
+    iv.setUint16(6, 1, false);
+    iv.setUint16(8, codeAttrName, false);
+    iv.setUint32(10, 13, false);
+    iv.setUint16(14, 1, false);
+    iv.setUint16(16, 1, false);
+    iv.setUint32(18, 1, false);
+    initMethod[22] = 0xb1;
+
+    const codeAttr = new Uint8Array(6 + 12 + codeBytes.length);
+    const cav = new DataView(codeAttr.buffer);
+    cav.setUint16(0, codeAttrName, false);
+    cav.setUint32(2, 12 + codeBytes.length, false);
+    cav.setUint16(6, 4, false);
+    cav.setUint16(8, 4, false);
+    cav.setUint32(10, codeBytes.length, false);
+    codeAttr.set(codeBytes, 14);
+
+    let rvaAttr = new Uint8Array(0);
+    if (spec.eventHandler) {
+      // num_annotations(2)=1, type_index(2), num_pairs(2)=2, [name(2),'e'(1),enumDesc(2),enumVal(2)], [name(2),'Z'(1),constIdx(2)] => 6 + 18 bytes
+      rvaAttr = new Uint8Array(6 + 18);
+      const rv = new DataView(rvaAttr.buffer);
+      rv.setUint16(0, rvaAttrName, false);
+      rv.setUint32(2, 18, false);
+      rv.setUint16(6, 1, false);
+      rv.setUint16(8, ehDescIdx, false);
+      rv.setUint16(10, 2, false);
+      rv.setUint16(12, prioKeyIdx, false);
+      rvaAttr[14] = 101; // 'e'
+      rv.setUint16(15, prioEnumDescIdx, false);
+      rv.setUint16(17, prioValIdx, false);
+      rv.setUint16(19, ignKeyIdx, false);
+      rvaAttr[21] = 90; // 'Z'
+      rv.setUint16(22, ignConstIdx, false);
+    }
+
+    const mHead = new Uint8Array(8);
+    const mhv = new DataView(mHead.buffer);
+    mhv.setUint16(0, 0x0001, false);
+    mhv.setUint16(2, mNameIdx, false);
+    mhv.setUint16(4, mDescIdx, false);
+    mhv.setUint16(6, spec.eventHandler ? 2 : 1, false);
+
+    const parts = [header, ...cpChunks, clsTail, initMethod, mHead, codeAttr, rvaAttr, new Uint8Array([0, 0])];
+    const total = parts.reduce((s, p) => s + p.length, 0);
+    const out = new Uint8Array(total);
+    let pos = 0;
+    for (const p of parts) { out.set(p, pos); pos += p.length; }
+    return out;
+  }
+
+  // Demo 6 (v0.7.0): Paper 26.3 BlockState/Component Codec (J077), Shaded ASM ClassWriter COMPUTE_FRAMES (J078), and Cross-Plugin EventPriority Cancel Race (S072)
+  document.getElementById("btnDemoV070").addEventListener("click", async () => {
+    const codecAndAsmJar = buildStoredZip("SkyCrateWeaver-0.7.0.jar", {
+      "paper-plugin.yml": [
+        "name: SkyCrateWeaver",
+        "version: '0.7.0'",
+        "main: com.acme.crate.CrateWeaverPlugin",
+        "api-version: '26.3'",
+        "folia-supported: true"
+      ].join("\n"),
+      "com/acme/crate/CrateWeaverPlugin.class": buildBytecodeDemoClass({
+        internalName: "com/acme/crate/CrateWeaverPlugin",
+        methodName: "onBlockBreakMonitor",
+        methodDesc: "(Lorg/bukkit/event/block/BlockBreakEvent;)V",
+        eventHandler: { priority: "MONITOR", ignoreCancelled: false },
+        buildCode: ({ methodRef }) => {
+          const cwInit = methodRef("com/acme/crate/libs/asm/ClassWriter", "<init>", "(I)V", false);
+          const regMut = methodRef("net/minecraft/core/Registry", "register", "(Lnet/minecraft/core/Registry;Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/Object;", true);
+          const getState = methodRef("org/bukkit/block/Block", "getState", "()Lorg/bukkit/block/BlockState;", true);
+          const pdcSet = methodRef("org/bukkit/persistence/PersistentDataContainer", "set", "(Lorg/bukkit/NamespacedKey;Lorg/bukkit/persistence/PersistentDataType;Ljava/lang/Object;)V", true);
+          const setCanc = methodRef("org/bukkit/event/block/BlockBreakEvent", "setCancelled", "(Z)V", false);
+          return new Uint8Array([
+            0x06, 0xb7, (cwInit >> 8) & 0xff, cwInit & 0xff,             // iconst_3; invokespecial ClassWriter.<init>(I)V (J078)
+            0xb9, (regMut >> 8) & 0xff, regMut & 0xff, 3, 0,             // invokeinterface Registry.register (J077 critical)
+            0xb9, (getState >> 8) & 0xff, getState & 0xff, 1, 0,         // invokeinterface Block.getState() (J077 detached)
+            0xb9, (pdcSet >> 8) & 0xff, pdcSet & 0xff, 4, 0,             // invokeinterface PersistentDataContainer.set (no update -> J077 warning)
+            0x04, 0xb6, (setCanc >> 8) & 0xff, setCanc & 0xff,           // iconst_1; invokevirtual BlockBreakEvent.setCancelled(true) @MONITOR (S072 critical)
+            0xb1
+          ]);
+        }
+      })
+    });
+
+    const guardAuditJar = buildStoredZip("RegionLedger-2.4.jar", {
+      "paper-plugin.yml": [
+        "name: RegionLedger",
+        "version: '2.4.0'",
+        "main: com.acme.ledger.LedgerListener",
+        "api-version: '26.3'",
+        "folia-supported: true"
+      ].join("\n"),
+      "com/acme/ledger/LedgerListener.class": buildBytecodeDemoClass({
+        internalName: "com/acme/ledger/LedgerListener",
+        methodName: "onProtectedBreak",
+        methodDesc: "(Lorg/bukkit/event/block/BlockBreakEvent;)V",
+        eventHandler: { priority: "LOW", ignoreCancelled: false },
+        buildCode: ({ methodRef }) => {
+          const setCanc = methodRef("org/bukkit/event/block/BlockBreakEvent", "setCancelled", "(Z)V", false);
+          return new Uint8Array([
+            0x04, 0xb6, (setCanc >> 8) & 0xff, setCanc & 0xff,           // setCancelled(true) @LOW
+            0xb1
+          ]);
+        }
+      })
+    });
+
+    const uncancelPickJar = buildStoredZip("BlastDrill-1.1.jar", {
+      "paper-plugin.yml": [
+        "name: BlastDrill",
+        "version: '1.1.0'",
+        "main: com.acme.drill.DrillListener",
+        "api-version: '26.3'",
+        "folia-supported: true"
+      ].join("\n"),
+      "com/acme/drill/DrillListener.class": buildBytecodeDemoClass({
+        internalName: "com/acme/drill/DrillListener",
+        methodName: "forceBreak",
+        methodDesc: "(Lorg/bukkit/event/block/BlockBreakEvent;)V",
+        eventHandler: { priority: "HIGHEST", ignoreCancelled: false },
+        buildCode: ({ methodRef }) => {
+          const setCanc = methodRef("org/bukkit/event/block/BlockBreakEvent", "setCancelled", "(Z)V", false);
+          return new Uint8Array([
+            0x03, 0xb6, (setCanc >> 8) & 0xff, setCanc & 0xff,           // iconst_0; setCancelled(false) @HIGHEST (S072 warning)
+            0xb1
+          ]);
+        }
+      })
+    });
+
+    await handleFiles([codecAndAsmJar, guardAuditJar, uncancelPickJar]);
+  });
+
   function downloadBlob(filename, content, type) {
     const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);
@@ -2779,7 +3275,7 @@
   btnExportJson.addEventListener("click", () => {
     const payload = {
       tool: "pluginscope-web",
-      toolVersion: "0.6.0",
+      toolVersion: "0.7.0",
       jars: currentJars.map(j => ({
         fileName: j.fileName,
         plugin: j.descriptor ? j.descriptor.name : null,
@@ -2814,7 +3310,7 @@
         tool: {
           driver: {
             name: "pluginscope",
-            version: "0.6.0",
+            version: "0.7.0",
             informationUri: "https://github.com/SalyyS1/pluginscope",
             rules: uniqueRules
           }

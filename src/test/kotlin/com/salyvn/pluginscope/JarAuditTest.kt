@@ -432,4 +432,320 @@ class JarAuditTest {
         assertEquals(Severity.WARNING, finding!!.severity)
         assertTrue(finding.detail.contains("unrelocated NMS or CraftBukkit reflection string literal")) { finding.detail }
     }
+
+    @Test
+    fun `runtime MappedRegistry mutation reports J077 critical`() {
+        val clsName = "com/example/codec/FrozenRegMutator"
+        val classBytes = run {
+            val cw = org.objectweb.asm.ClassWriter(0)
+            cw.visit(65, org.objectweb.asm.Opcodes.ACC_PUBLIC, clsName, null, "java/lang/Object", null)
+            cw.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+                visitCode()
+                visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 0)
+                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+                visitInsn(org.objectweb.asm.Opcodes.RETURN)
+                visitMaxs(1, 1)
+                visitEnd()
+            }
+            cw.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "onEnable", "()V", null, null).apply {
+                visitCode()
+                visitInsn(org.objectweb.asm.Opcodes.ACONST_NULL)
+                visitLdcInsn("custom:comp")
+                visitInsn(org.objectweb.asm.Opcodes.ACONST_NULL)
+                visitMethodInsn(
+                    org.objectweb.asm.Opcodes.INVOKESTATIC,
+                    "net/minecraft/core/Registry",
+                    "register",
+                    "(Lnet/minecraft/core/Registry;Ljava/lang/String;Ljava/lang/Object;)Ljava/lang/Object;",
+                    true,
+                )
+                visitInsn(org.objectweb.asm.Opcodes.POP)
+                visitInsn(org.objectweb.asm.Opcodes.RETURN)
+                visitMaxs(3, 1)
+                visitEnd()
+            }
+            cw.visitEnd()
+            cw.toByteArray()
+        }
+        val jar = FixtureJars.pluginJar(
+            jarName = "frozen-registry-mutator",
+            descriptor = FixtureJars.descriptor("FrozenRegPlugin", "com.example.codec.FrozenRegMutator", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf("$clsName.class" to classBytes),
+        )
+        val report = audit(jar)
+        val finding = report.findings.firstOrNull { it.ruleId == "J077" && it.severity == Severity.CRITICAL }
+        assertTrue(finding != null) { "expected critical J077 in ${report.findings.map { it.ruleId }}" }
+        assertTrue(finding!!.detail.contains("MappedRegistry")) { finding.detail }
+    }
+
+    @Test
+    fun `legacy BlockState setRawData on Paper 26_3 reports J077 critical`() {
+        val clsName = "com/example/codec/LegacyRawBlockPlugin"
+        val classBytes = run {
+            val cw = org.objectweb.asm.ClassWriter(0)
+            cw.visit(65, org.objectweb.asm.Opcodes.ACC_PUBLIC, clsName, null, "java/lang/Object", null)
+            cw.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+                visitCode()
+                visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 0)
+                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+                visitInsn(org.objectweb.asm.Opcodes.RETURN)
+                visitMaxs(1, 1)
+                visitEnd()
+            }
+            cw.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "mutateRaw", "(Lorg/bukkit/block/BlockState;)V", null, null).apply {
+                visitCode()
+                visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 1)
+                visitInsn(org.objectweb.asm.Opcodes.ICONST_3)
+                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKEINTERFACE, "org/bukkit/block/BlockState", "setRawData", "(B)V", true)
+                visitInsn(org.objectweb.asm.Opcodes.RETURN)
+                visitMaxs(2, 2)
+                visitEnd()
+            }
+            cw.visitEnd()
+            cw.toByteArray()
+        }
+        val jar = FixtureJars.pluginJar(
+            jarName = "legacy-raw-block",
+            descriptor = FixtureJars.descriptor("LegacyRawBlock", "com.example.codec.LegacyRawBlockPlugin", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf("$clsName.class" to classBytes),
+        )
+        val report = audit(jar)
+        val finding = report.findings.firstOrNull { it.ruleId == "J077" && it.severity == Severity.CRITICAL }
+        assertTrue(finding != null) { "expected critical J077 in ${report.findings.map { it.ruleId }}" }
+        assertTrue(finding!!.detail.contains("MaterialData")) { finding.detail }
+    }
+
+    @Test
+    fun `detached Block getState TileState PDC mutation without update reports J077 warning`() {
+        val clsName = "com/example/codec/DetachedTilePlugin"
+        val classBytes = run {
+            val cw = org.objectweb.asm.ClassWriter(0)
+            cw.visit(65, org.objectweb.asm.Opcodes.ACC_PUBLIC, clsName, null, "java/lang/Object", null)
+            cw.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+                visitCode()
+                visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 0)
+                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+                visitInsn(org.objectweb.asm.Opcodes.RETURN)
+                visitMaxs(1, 1)
+                visitEnd()
+            }
+            cw.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "writeTagBuggy", "(Lorg/bukkit/block/Block;)V", null, null).apply {
+                visitCode()
+                val lbl = org.objectweb.asm.Label()
+                visitLabel(lbl)
+                visitLineNumber(55, lbl)
+                visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 1)
+                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKEINTERFACE, "org/bukkit/block/Block", "getState", "()Lorg/bukkit/block/BlockState;", true)
+                visitTypeInsn(org.objectweb.asm.Opcodes.CHECKCAST, "org/bukkit/block/TileState")
+                visitVarInsn(org.objectweb.asm.Opcodes.ASTORE, 2)
+                visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 2)
+                visitMethodInsn(
+                    org.objectweb.asm.Opcodes.INVOKEINTERFACE,
+                    "org/bukkit/block/TileState",
+                    "getPersistentDataContainer",
+                    "()Lorg/bukkit/persistence/PersistentDataContainer;",
+                    true,
+                )
+                visitInsn(org.objectweb.asm.Opcodes.ACONST_NULL)
+                visitInsn(org.objectweb.asm.Opcodes.ACONST_NULL)
+                visitLdcInsn("tier-3")
+                visitMethodInsn(
+                    org.objectweb.asm.Opcodes.INVOKEINTERFACE,
+                    "org/bukkit/persistence/PersistentDataContainer",
+                    "set",
+                    "(Lorg/bukkit/NamespacedKey;Lorg/bukkit/persistence/PersistentDataType;Ljava/lang/Object;)V",
+                    true,
+                )
+                visitInsn(org.objectweb.asm.Opcodes.RETURN)
+                visitMaxs(4, 3)
+                visitEnd()
+            }
+            cw.visitEnd()
+            cw.toByteArray()
+        }
+        val jar = FixtureJars.pluginJar(
+            jarName = "detached-tile-bug",
+            descriptor = FixtureJars.descriptor("DetachedTile", "com.example.codec.DetachedTilePlugin", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf("$clsName.class" to classBytes),
+        )
+        val report = audit(jar)
+        val finding = report.findings.firstOrNull { it.ruleId == "J077" }
+        assertTrue(finding != null) { "expected J077 warning in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.WARNING, finding!!.severity)
+        assertTrue(finding.detail.contains("PersistentDataContainer#set")) { finding.detail }
+    }
+
+    @Test
+    fun `detached Block getState calling update or live getState false produces no J077`() {
+        val clsName = "com/example/codec/CleanTilePlugin"
+        val classBytes = run {
+            val cw = org.objectweb.asm.ClassWriter(0)
+            cw.visit(65, org.objectweb.asm.Opcodes.ACC_PUBLIC, clsName, null, "java/lang/Object", null)
+            cw.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+                visitCode()
+                visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 0)
+                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+                visitInsn(org.objectweb.asm.Opcodes.RETURN)
+                visitMaxs(1, 1)
+                visitEnd()
+            }
+            cw.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "writeWithUpdate", "(Lorg/bukkit/block/Block;)V", null, null).apply {
+                visitCode()
+                visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 1)
+                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKEINTERFACE, "org/bukkit/block/Block", "getState", "()Lorg/bukkit/block/BlockState;", true)
+                visitTypeInsn(org.objectweb.asm.Opcodes.CHECKCAST, "org/bukkit/block/TileState")
+                visitVarInsn(org.objectweb.asm.Opcodes.ASTORE, 2)
+                visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 2)
+                visitInsn(org.objectweb.asm.Opcodes.ACONST_NULL)
+                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKEINTERFACE, "org/bukkit/block/BlockState", "setBlockData", "(Lorg/bukkit/block/data/BlockData;)V", true)
+                visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 2)
+                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKEINTERFACE, "org/bukkit/block/BlockState", "update", "()Z", true)
+                visitInsn(org.objectweb.asm.Opcodes.POP)
+                // Also verify Paper live getState(false) needs no update()
+                visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 1)
+                visitInsn(org.objectweb.asm.Opcodes.ICONST_0)
+                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKEINTERFACE, "org/bukkit/block/Block", "getState", "(Z)Lorg/bukkit/block/BlockState;", true)
+                visitInsn(org.objectweb.asm.Opcodes.ACONST_NULL)
+                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKEINTERFACE, "org/bukkit/block/BlockState", "setBlockData", "(Lorg/bukkit/block/data/BlockData;)V", true)
+                visitInsn(org.objectweb.asm.Opcodes.RETURN)
+                visitMaxs(3, 3)
+                visitEnd()
+            }
+            cw.visitEnd()
+            cw.toByteArray()
+        }
+        val jar = FixtureJars.pluginJar(
+            jarName = "clean-tile-plugin",
+            descriptor = FixtureJars.descriptor("CleanTile", "com.example.codec.CleanTilePlugin", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf("$clsName.class" to classBytes),
+        )
+        val report = audit(jar)
+        assertTrue(report.findings.none { it.ruleId == "J077" }) {
+            "unexpected J077 in ${report.findings}"
+        }
+    }
+
+    @Test
+    fun `ASM ClassWriter instantiated with COMPUTE_FRAMES reports J078 critical`() {
+        val clsName = "com/example/weaver/BrokenWeaver"
+        val classBytes = run {
+            val cw = org.objectweb.asm.ClassWriter(0)
+            cw.visit(65, org.objectweb.asm.Opcodes.ACC_PUBLIC, clsName, null, "java/lang/Object", null)
+            cw.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+                visitCode()
+                visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 0)
+                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+                visitInsn(org.objectweb.asm.Opcodes.RETURN)
+                visitMaxs(1, 1)
+                visitEnd()
+            }
+            cw.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "generateProxy", "()[B", null, null).apply {
+                visitCode()
+                visitTypeInsn(org.objectweb.asm.Opcodes.NEW, "com/example/weaver/libs/asm/ClassWriter")
+                visitInsn(org.objectweb.asm.Opcodes.DUP)
+                // COMPUTE_FRAMES (2) | COMPUTE_MAXS (1) = 3
+                visitInsn(org.objectweb.asm.Opcodes.ICONST_3)
+                visitMethodInsn(
+                    org.objectweb.asm.Opcodes.INVOKESPECIAL,
+                    "com/example/weaver/libs/asm/ClassWriter",
+                    "<init>",
+                    "(I)V",
+                    false,
+                )
+                visitInsn(org.objectweb.asm.Opcodes.POP)
+                visitInsn(org.objectweb.asm.Opcodes.ACONST_NULL)
+                visitInsn(org.objectweb.asm.Opcodes.ARETURN)
+                visitMaxs(3, 1)
+                visitEnd()
+            }
+            cw.visitEnd()
+            cw.toByteArray()
+        }
+        val jar = FixtureJars.pluginJar(
+            jarName = "broken-asm-weaver",
+            descriptor = FixtureJars.descriptor("BrokenWeaver", "com.example.weaver.BrokenWeaver", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf("$clsName.class" to classBytes),
+        )
+        val report = audit(jar)
+        val finding = report.findings.firstOrNull { it.ruleId == "J078" }
+        assertTrue(finding != null) { "expected J078 in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.CRITICAL, finding!!.severity)
+        assertTrue(finding.detail.contains("COMPUTE_FRAMES")) { finding.detail }
+    }
+
+    @Test
+    fun `custom ClassWriter subclass overriding getCommonSuperClass with COMPUTE_FRAMES is safe`() {
+        val safeSubName = "com/example/weaver/PluginSafeClassWriter"
+        val mainName = "com/example/weaver/SafeWeaverMain"
+        val safeSubBytes = run {
+            val cw = org.objectweb.asm.ClassWriter(0)
+            cw.visit(65, org.objectweb.asm.Opcodes.ACC_PUBLIC, safeSubName, null, "com/example/weaver/libs/asm/ClassWriter", null)
+            cw.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+                visitCode()
+                visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 0)
+                visitInsn(org.objectweb.asm.Opcodes.ICONST_2)
+                visitMethodInsn(
+                    org.objectweb.asm.Opcodes.INVOKESPECIAL,
+                    "com/example/weaver/libs/asm/ClassWriter",
+                    "<init>",
+                    "(I)V",
+                    false,
+                )
+                visitInsn(org.objectweb.asm.Opcodes.RETURN)
+                visitMaxs(2, 1)
+                visitEnd()
+            }
+            cw.visitMethod(
+                org.objectweb.asm.Opcodes.ACC_PROTECTED,
+                "getCommonSuperClass",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+                null,
+                null,
+            ).apply {
+                visitCode()
+                visitLdcInsn("java/lang/Object")
+                visitInsn(org.objectweb.asm.Opcodes.ARETURN)
+                visitMaxs(1, 3)
+                visitEnd()
+            }
+            cw.visitEnd()
+            cw.toByteArray()
+        }
+        val mainBytes = run {
+            val cw = org.objectweb.asm.ClassWriter(0)
+            cw.visit(65, org.objectweb.asm.Opcodes.ACC_PUBLIC, mainName, null, "java/lang/Object", null)
+            cw.visitMethod(org.objectweb.asm.Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+                visitCode()
+                visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 0)
+                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+                visitTypeInsn(org.objectweb.asm.Opcodes.NEW, safeSubName)
+                visitInsn(org.objectweb.asm.Opcodes.DUP)
+                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKESPECIAL, safeSubName, "<init>", "()V", false)
+                visitInsn(org.objectweb.asm.Opcodes.POP)
+                visitInsn(org.objectweb.asm.Opcodes.RETURN)
+                visitMaxs(2, 1)
+                visitEnd()
+            }
+            cw.visitEnd()
+            cw.toByteArray()
+        }
+        val jar = FixtureJars.pluginJar(
+            jarName = "safe-asm-weaver",
+            descriptor = FixtureJars.descriptor("SafeWeaver", "com.example.weaver.SafeWeaverMain", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf(
+                "$safeSubName.class" to safeSubBytes,
+                "$mainName.class" to mainBytes,
+            ),
+        )
+        val report = audit(jar)
+        assertTrue(report.findings.none { it.ruleId == "J078" }) {
+            "unexpected J078 on safe ClassWriter subclass: ${report.findings}"
+        }
+    }
 }

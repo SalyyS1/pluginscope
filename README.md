@@ -20,7 +20,22 @@ Four commands, four questions:
 
 `pluginscope mcp` also serves all analyses over the Model Context Protocol on `stdio` so coding agents can audit plugin artifacts directly.
 
-## What is new in v0.6.0
+## What is new in v0.7.0
+
+- Paper 26.3 block-state and data component codec verification (`J077`):
+  - Flags runtime mutations or `Registry.register` calls on frozen Mojang `MappedRegistry` / `BuiltInRegistries` (`DATA_COMPONENT_TYPE`, `BLOCK`, `BLOCK_ENTITY_TYPE`), which fail after Paper's pre-enable freeze barrier or corrupt clientbound `RegistrySynchronization` codecs.
+  - Detects removed legacy numeric block-state byte and `MaterialData` APIs (`BlockState#setRawData`, `Block#setData`) when targeting modern Paper (`1.20.5+..26.3+`).
+  - Performs intra-procedural ASM operand-stack and local-variable dataflow tracking on detached `Block#getState()` snapshots, warning when `TileState` / `PersistentDataContainer` / `SignSide` / `BlockState` mutations occur without calling `BlockState#update(...)` or returning the snapshot (while recognizing Paper's live `block.getState(false)` accessor as safe).
+- Shaded ASM `ClassWriter(COMPUTE_FRAMES)` stack-map-table hazard scanner (`J078`):
+  - Tracks constant integer bitmasks (`ClassWriter.COMPUTE_FRAMES`, bit `0x2`) passed to `org.objectweb.asm.ClassWriter` (and relocated `*/asm/ClassWriter` hierarchies) across bytecode instructions.
+  - Flags `ClassWriter` instantiations with `COMPUTE_FRAMES` that do not override `getCommonSuperClass(String, String)`, preventing `TypeNotPresentException`, `ClassNotFoundException`, and classloader deadlocks across isolated `PaperPluginClassLoader` boundaries on Java 21 and Java 25.
+- Cross-plugin `EventPriority` cancellation and `MONITOR` mutation detector (`S072`):
+  - Parses `@EventHandler(priority, ignoreCancelled)` annotations and listener bytecode across all installed plugins in `plugins/`.
+  - Reports `CRITICAL` violations when a plugin calls `setCancelled` or mutates event results inside a read-only `EventPriority.MONITOR` handler while co-installed plugins listen to the same event, and `WARNING` findings on uncoordinated same-priority cancel races or `HIGH`/`HIGHEST` `setCancelled(false)` overrides lacking explicit load-order edges.
+- Interactive browser `.jar` inspector upgrade (`docs/index.html`):
+  - Client-side JVM method `Code` instruction and `RuntimeVisibleAnnotations` inspector detecting `J077`, `J078`, and `S072` locally in the browser with an in-memory 3-JAR v0.7.0 binary demo.
+
+## Previous highlights in v0.6.0
 
 - Paper 1.21.4+..26.3+ PluginRemapper hazard analysis (`J075`):
   - Detects `paper-plugin.yml` plugins containing direct or shaded references to `org.bukkit.craftbukkit` or `net.minecraft.server`. Modern Paper (1.20.5+..26.3+) bypasses `PluginRemapper` for `paper-plugin.yml` plugins, so unremapped server internals fail at runtime with `ClassNotFoundException` / `LinkageError`.
@@ -71,37 +86,37 @@ Java 21 or newer. The release JAR is self-contained.
 
 ## Install
 
-Download `pluginscope-0.6.0.jar` from [GitHub Releases](https://github.com/SalyyS1/pluginscope/releases) and run:
+Download `pluginscope-0.7.0.jar` from [GitHub Releases](https://github.com/SalyyS1/pluginscope/releases) and run:
 
 ```bash
-java -jar pluginscope-0.6.0.jar --help
+java -jar pluginscope-0.7.0.jar --help
 ```
 
 ## Quick start
 
 ```bash
 # Audit one plugin JAR against a target Minecraft server version
-java -jar pluginscope-0.6.0.jar jar MyPlugin.jar --target 26.3
+java -jar pluginscope-0.7.0.jar jar MyPlugin.jar --target 26.3
 
 # Check API compatibility against Paper 1.21.4 (downloads and caches paper-api once)
-java -jar pluginscope-0.6.0.jar compat MyPlugin.jar --mc 1.21.4
+java -jar pluginscope-0.7.0.jar compat MyPlugin.jar --mc 1.21.4
 
 # Audit an entire server plugins/ folder for classloader blocks and shading collisions
-java -jar pluginscope-0.6.0.jar stack /srv/mc/plugins
+java -jar pluginscope-0.7.0.jar stack /srv/mc/plugins
 
 # Emit console output AND write OASIS SARIF v2.1.0 in a single run
-java -jar pluginscope-0.6.0.jar stack /srv/mc/plugins --sarif pluginscope.sarif
+java -jar pluginscope-0.7.0.jar stack /srv/mc/plugins --sarif pluginscope.sarif
 
 # Validate a resource pack directory or zip
-java -jar pluginscope-0.6.0.jar pack pack.zip --mc 26.3
+java -jar pluginscope-0.7.0.jar pack pack.zip --mc 26.3
 
 # Print all rules with rationale, remediation, and primary source provenance
-java -jar pluginscope-0.6.0.jar rules
+java -jar pluginscope-0.7.0.jar rules
 ```
 
 ## GitHub Actions & Code Scanning (SARIF v2.1.0)
 
-Use the composite action `SalyyS1/pluginscope@v0.6.0` to gate pull requests and publish shading, packaging, and Paper classloader findings directly to the GitHub **Security -> Code scanning** tab:
+Use the composite action `SalyyS1/pluginscope@v0.7.0` to gate pull requests and publish shading, packaging, and Paper classloader findings directly to the GitHub **Security -> Code scanning** tab:
 
 ```yaml
 name: Plugin Audit
@@ -125,7 +140,7 @@ jobs:
         run: ./gradlew build --no-daemon
 
       - name: Run PluginScope static audit
-        uses: SalyyS1/pluginscope@v0.6.0
+        uses: SalyyS1/pluginscope@v0.7.0
         with:
           command: jar
           path: build/libs
@@ -231,7 +246,7 @@ plugins directory: /srv/mc/plugins
   "mcpServers": {
     "pluginscope": {
       "command": "java",
-      "args": ["-jar", "/absolute/path/to/pluginscope-0.6.0.jar", "mcp"]
+      "args": ["-jar", "/absolute/path/to/pluginscope-0.7.0.jar", "mcp"]
     }
   }
 }
@@ -255,7 +270,7 @@ Exposed read-only tools: `scan_jar`, `check_api_compat`, `audit_plugins_dir`, `v
 ./gradlew test shadowJar --no-daemon
 ```
 
-Produces `build/libs/pluginscope-0.6.0.jar` (self-contained shaded CLI) and runs the full JUnit 6 suite against compiled bytecode fixtures.
+Produces `build/libs/pluginscope-0.7.0.jar` (self-contained shaded CLI) and runs the full JUnit 6 suite against compiled bytecode fixtures.
 
 ## Licence
 

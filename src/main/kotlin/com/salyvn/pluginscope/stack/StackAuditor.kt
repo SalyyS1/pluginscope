@@ -56,6 +56,10 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
             plugins.map { CrossPluginDataflowChecks.PluginUnit(it.path, it.jar, it.name) },
             sink,
         )
+        val priorityConflicts = CrossPluginEventPriorityChecks.run(
+            plugins.map { CrossPluginEventPriorityChecks.PluginCandidate(it.path, it.jar, it.name, it.provides) },
+            sink,
+        )
         checkRuntime(inspections, plugins, sink)
 
         return ScanReport(
@@ -80,6 +84,7 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
                 put("multi-release collisions", "$mrCollisions collision(s) across Multi-Release versioned classfiles")
                 put("service conflicts", "$serviceConflicts conflict(s) across audited service providers")
                 put("event handler conflicts", "$eventConflicts conflict(s) across audited custom event classes")
+                put("event priority conflicts", "$priorityConflicts conflict(s) across @EventHandler priority chains")
                 put("cross-plugin leaks", "$crossPluginLeaks leak path(s) across installed plugin classloaders")
                 for (plugin in plugins.sortedBy { it.name.lowercase() }) {
                     val jar = plugin.jar
