@@ -251,6 +251,21 @@ object StackRules {
             "or collections holding foreign plugin instances in onDisable() and PluginDisableEvent.",
     )
 
+    val MULTI_RELEASE_CLASS_COLLISION = Rule(
+        id = "S071",
+        severity = Severity.CRITICAL,
+        title = "Transitive META-INF/versions multi-release JAR classfile collision",
+        rationale = "Multiple installed plugins bundle or shade conflicting Multi-Release (MR-JAR) classfiles under " +
+            "META-INF/versions/ or mix Multi-Release versioned overrides with unversioned base classfiles. When Paper " +
+            "or the host JVM executes on Java 17+ or 21+, Multi-Release classloaders resolve Java-version-specific " +
+            "class implementations while legacy classloaders or shading without Multi-Release: true resolve the base version. " +
+            "Mismatched method ABI, stripped manifests, or divergent bytecode across plugins cause non-deterministic " +
+            "linkage failures (NoSuchMethodError, IncompatibleClassChangeError) depending on classloader resolution order.",
+        provenance = "JEP 238 Multi-Release JAR files, java.util.jar.JarFile versioning, and PaperPluginClassLoader classpath isolation",
+        fix = "Relocate shaded Multi-Release dependencies, ensure Multi-Release: true is preserved in manifest attributes, " +
+            "or align library versions across plugins.",
+    )
+
     val all = listOf(
         MISSING_HARD_DEPENDENCY, DEPENDENCY_CYCLE, UNDECLARED_PLUGIN_DEPENDENCY,
         ISOLATED_CLASSLOADER_BLOCKED, PAPER_BOOTSTRAP_TARGETS_LEGACY_PLUGIN,
@@ -260,5 +275,6 @@ object StackRules {
         SHARED_LIBRARY_DUPLICATED, TRANSITIVE_SHADING_COLLISION, SERVICE_PROVIDER_SHADING_CONFLICT,
         EVENT_HANDLER_SHADING_CONFLICT, JAVA_REQUIREMENT,
         LEGACY_PLUGIN_PRESENT, MISSING_SOFT_DEPENDENCY, FOLIA_MIX, CROSS_PLUGIN_DATAFLOW_LEAK,
+        MULTI_RELEASE_CLASS_COLLISION,
     )
 }

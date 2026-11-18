@@ -21,8 +21,30 @@ data class ClassEntry(
     val deprecated: Boolean,
     /** Methods and fields carrying `@Deprecated`, same encoding as [methods] / [fields]. */
     val deprecatedMembers: Set<String>,
+    /** NMS and CraftBukkit string literals discovered in LDC constant pool instructions. */
+    val stringConstants: Set<String> = emptySet(),
 ) {
     val packageName: String get() = internalName.substringBeforeLast('/', "")
+
+    /** True if this class entry resides under META-INF/versions/ (Multi-Release JAR, JEP 238). */
+    val isMultiRelease: Boolean
+        get() = entryName.startsWith("META-INF/versions/")
+
+    /** Target Java major version from META-INF/versions/<ver>/, e.g. 17 or 21. */
+    val multiReleaseVersion: Int?
+        get() {
+            if (!isMultiRelease) return null
+            val rest = entryName.removePrefix("META-INF/versions/")
+            return rest.substringBefore('/').toIntOrNull()
+        }
+
+    /** Path without META-INF/versions/<ver>/ prefix, e.g. "org/example/Foo.class". */
+    val normalizedClassPath: String
+        get() = if (isMultiRelease) {
+            entryName.removePrefix("META-INF/versions/").substringAfter('/')
+        } else {
+            entryName
+        }
 
     /**
      * True when this class represents a Bukkit custom event: it either inherits directly from
@@ -72,6 +94,21 @@ data class MemberUse(
     }
 }
 
+/**
+ * A string literal discovered in LDC constant pool instructions, targeting NMS or CraftBukkit internals.
+ */
+data class StringLiteralUse(
+    val value: String,
+    val fromClass: String,
+    val fromMethod: String,
+    val line: Int?,
+) {
+    fun render(): String {
+        val loc = if (line != null) ":$line" else ""
+        return "${fromClass.replace('/', '.')}#$fromMethod$loc: \"$value\""
+    }
+}
+
 /** Everything read out of one jar in a single pass. */
 data class JarInspection(
     val path: String,
@@ -86,7 +123,16 @@ data class JarInspection(
     /** Entries that could not be parsed. A corrupt class is a finding, not a crash. */
     val readErrors: List<String>,
     val manifest: Map<String, String>,
+    val stringLiteralUses: List<StringLiteralUse> = emptyList(),
 ) {
+    /** True if this jar declares Multi-Release: true in its manifest or carries META-INF/versions/ classes. */
+    val isMultiReleaseJar: Boolean
+        get() = manifest["Multi-Release"]?.equals("true", ignoreCase = true) == true ||
+            classes.any { it.isMultiRelease }
+
+    val multiReleaseClasses: List<ClassEntry>
+        get() = classes.filter { it.isMultiRelease }
+
     /** paper-plugin.yml wins when both are present, which is what the server does. */
     val descriptor: PluginDescriptor?
         get() = descriptors[DescriptorKind.PAPER] ?: descriptors[DescriptorKind.LEGACY]

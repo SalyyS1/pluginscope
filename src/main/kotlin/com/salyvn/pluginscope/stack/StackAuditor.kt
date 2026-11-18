@@ -1,6 +1,7 @@
 package com.salyvn.pluginscope.stack
 
 import com.salyvn.pluginscope.core.BuildInfo
+import com.salyvn.pluginscope.core.ClassEntry
 import com.salyvn.pluginscope.core.DescriptorKind
 import com.salyvn.pluginscope.core.FindingSink
 import com.salyvn.pluginscope.core.JarInspection
@@ -49,6 +50,7 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
         checkClassloaderIsolation(plugins, sink)
         checkCommands(plugins, sink)
         checkSharedLibraries(plugins, sink)
+        val mrCollisions = checkMultiReleaseCollisions(plugins, sink)
         val (serviceConflicts, eventConflicts) = checkServiceAndEventConflicts(plugins, sink)
         val crossPluginLeaks = CrossPluginDataflowChecks.run(
             plugins.map { CrossPluginDataflowChecks.PluginUnit(it.path, it.jar, it.name) },
@@ -75,6 +77,7 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
                     ),
                 )
                 put("target", if (foliaTarget) "Folia" else "Paper")
+                put("multi-release collisions", "$mrCollisions collision(s) across Multi-Release versioned classfiles")
                 put("service conflicts", "$serviceConflicts conflict(s) across audited service providers")
                 put("event handler conflicts", "$eventConflicts conflict(s) across audited custom event classes")
                 put("cross-plugin leaks", "$crossPluginLeaks leak path(s) across installed plugin classloaders")
@@ -872,6 +875,76 @@ class StackAuditor(private val foliaTarget: Boolean = false) {
         }
 
         return serviceConflicts to eventConflicts
+    }
+
+    private fun checkMultiReleaseCollisions(plugins: List<Installed>, sink: FindingSink): Int {
+        var collisions = 0
+
+        data class ClassVariant(
+            val plugin: Installed,
+            val classEntry: ClassEntry,
+            val isMultiRelease: Boolean,
+            val mrVersion: Int?,
+            val hasManifestFlag: Boolean,
+        )
+
+        val classMap = linkedMapOf<String, MutableList<ClassVariant>>()
+        for (plugin in plugins) {
+            val hasManifest = plugin.jar.manifest["Multi-Release"]?.equals("true", ignoreCase = true) == true
+            for (cls in plugin.jar.classes) {
+                if (ServerRuntime.isServerNamespace(cls.internalName)) continue
+                classMap.getOrPut(cls.internalName) { mutableListOf() } += ClassVariant(
+                    plugin = plugin,
+                    classEntry = cls,
+                    isMultiRelease = cls.isMultiRelease,
+                    mrVersion = cls.multiReleaseVersion,
+                    hasManifestFlag = hasManifest,
+                )
+            }
+        }
+
+        for ((internalName, variants) in classMap) {
+            val distinctPlugins = variants.distinctBy { it.plugin.name.lowercase() }
+            if (distinctPlugins.size < 2) continue
+
+            val mrVariants = variants.filter { it.isMultiRelease }
+            if (mrVariants.isEmpty()) continue
+
+            val baseVariants = variants.filter { !it.isMultiRelease }
+            val missingManifestVariants = mrVariants.filter { !it.hasManifestFlag }
+
+            val hasAbiSkew = variants.map { v ->
+                "${v.classEntry.majorVersion}:m=${v.classEntry.methods.sorted().joinToString(",")}:f=${v.classEntry.fields.sorted().joinToString(",")}"
+            }.distinct().size > 1
+
+            val hasVersionSkew = variants.map { it.mrVersion ?: 0 }.distinct().size > 1
+
+            if (baseVariants.isNotEmpty() || hasAbiSkew || hasVersionSkew || missingManifestVariants.isNotEmpty()) {
+                collisions++
+                val dotted = internalName.replace('/', '.')
+                val pluginNames = distinctPlugins.map { it.plugin.name }.distinct()
+                val evidence = variants.map { v ->
+                    val kind = if (v.isMultiRelease) "MR-JAR (Java ${v.mrVersion ?: "?"}${if (!v.hasManifestFlag) ", MISSING Multi-Release manifest" else ""})" else "Base (Java ${JavaRuntimes.describe(v.classEntry.majorVersion)})"
+                    "${v.plugin.name} (${v.plugin.jar.fileName}): ${v.classEntry.entryName} [$kind, ${v.classEntry.methods.size} methods]"
+                }.distinct()
+
+                val reason = when {
+                    missingManifestVariants.isNotEmpty() -> "MR-JAR class bundled without Multi-Release: true manifest flag alongside other plugin variants"
+                    baseVariants.isNotEmpty() && hasAbiSkew -> "Multi-Release versioned classfile collides with unversioned base classfile with mismatched method ABI"
+                    hasVersionSkew -> "Conflicting Multi-Release Java versions or base/versioned classfile skew"
+                    else -> "Transitive Multi-Release classfile collision across plugin classloaders"
+                }
+
+                sink.add(
+                    StackRules.MULTI_RELEASE_CLASS_COLLISION,
+                    location = dotted,
+                    detail = "$reason for $dotted across ${pluginNames.size} plugins: ${pluginNames.joinToString(", ")}. Mismatched JVM classloader resolution causes runtime linkage errors.",
+                    evidence = evidence,
+                )
+            }
+        }
+
+        return collisions
     }
 
     private fun checkRuntime(inspections: List<JarInspection>, plugins: List<Installed>, sink: FindingSink) {

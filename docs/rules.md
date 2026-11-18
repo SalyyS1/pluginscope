@@ -331,6 +331,36 @@ being claimed.
 
 **Source.** java.lang.ApplicationShutdownHooks, java.sql.DriverManager, and java.lang.ThreadLocalMap classloader retention
 
+### J074 - Cross-plugin hook, expansion, or Netty pipeline handler leaked across reloads
+
+`critical`
+
+**Why it matters.** Injecting custom ChannelHandler instances into Netty ChannelPipeline without removal in onDisable, registering persistent PlaceholderExpansion hooks without unregister() in onDisable, or caching foreign Plugin and ServicesManager provider instances inside static fields without clearing in onDisable or PluginDisableEvent retains foreign or own PaperPluginClassLoader graphs across plugin disable and reload.
+
+**Fix.** Unregister PlaceholderExpansion instances and remove custom Netty ChannelPipeline handlers in onDisable, and clear static cross-plugin provider fields in onDisable and PluginDisableEvent.
+
+**Source.** io.netty.channel.ChannelPipeline handler retention, PlaceholderAPI ExpansionManager lifecycle, and Bukkit ServicesManager / PluginManager references
+
+### J075 - Paper 1.21.4+..26.3+ PluginRemapper hazard in descriptor or bytecode
+
+`critical`
+
+**Why it matters.** Paper's runtime PluginRemapper converts legacy Spigot-mapped and CraftBukkit bytecode to Mojang mappings exclusively for legacy plugin.yml plugins. When a plugin declares paper-plugin.yml, Paper bypasses PluginRemapper entirely, so any direct or shaded references to net.minecraft.server or org.bukkit.craftbukkit fail with LinkageError. Conversely, when a plugin is declared only in plugin.yml without paper-plugin.yml, but uses dynamic ClassLoader definition or targets Paper 1.21.4+..26.3+ without remapping hooks, unremapped types or dynamic classes bypass runtime remapping.
+
+**Fix.** Compile against Mojang mappings and Bukkit API for paper-plugin.yml plugins, or avoid referencing unremapped server internals and dynamic classloader definitions that bypass PluginRemapper.
+
+**Source.** PaperMC Paperweight runtime PluginRemapper and PaperPluginClassLoader remapping lifecycle
+
+### J076 - Unrelocated NMS or CraftBukkit reflection string literal in bytecode
+
+`warning`
+
+**Why it matters.** Bytecode contains String literals in the constant pool specifying internal CraftBukkit (org.bukkit.craftbukkit.*) or Minecraft Server (net.minecraft.* / net.minecraft.server.*) class names or packages passed to reflection. Paper's PluginRemapper and build tools (Shadow/relocate) only rewrite bytecode class and member descriptors, leaving String literals in LDC instructions unmodified. On modern Paper (1.20.5+..26.3+), legacy versioned packages (v1_*) and Spigot mappings no longer exist, causing ClassNotFoundException or NoSuchFieldException at runtime upon reflection lookup.
+
+**Fix.** Replace reflection string literals with compile-time Bukkit/Paper API calls, or use Paperweight userdev Mojang mappings with ReflectionRemapper utilities.
+
+**Source.** LDC string constants in method bytecode compared against CraftBukkit and NMS package patterns
+
 ## pluginscope compat
 
 5 rules.
@@ -428,6 +458,36 @@ being claimed.
 **Fix.** Set join-classpath: true under dependencies.server in paper-plugin.yml, or set has-open-classloader: true on the target Paper plugin.
 
 **Source.** PaperMC/Paper PaperPluginClassLoader and SpigotPluginClassLoader visibility rules
+
+### S005 - Paper bootstrap dependency targets a legacy plugin.yml plugin
+
+`blocker`
+
+**Why it matters.** Paper's bootstrap phase only registers paper-plugin.yml providers inside its BootstrapProviderStorage. Legacy plugin.yml plugins have no bootstrapper and do not exist during bootstrap dependency resolution. A required bootstrap dependency on a legacy plugin aborts loading even when the legacy jar is installed in plugins/, while an optional one is never satisfied.
+
+**Fix.** Move the dependency from dependencies.bootstrap to dependencies.server in paper-plugin.yml, or migrate the target plugin to paper-plugin.yml with a PluginBootstrap entrypoint.
+
+**Source.** PaperMC/Paper PaperPluginEntrypointHandler and SimpleProviderStorage bootstrap resolution
+
+### S006 - Multi-loader bootstrap or server load-order cycle or stage inversion
+
+`critical`
+
+**Why it matters.** Paper constructs directed topological load-order graphs across dependencies.bootstrap (BEFORE and AFTER) and dependencies.server alongside legacy plugin.yml depend, softdepend, and loadbefore edges (including provides aliases). Cycles across BEFORE/AFTER/loadbefore edges or STARTUP plugins requiring POSTWORLD plugins to load BEFORE them break deterministic initialization.
+
+**Fix.** Flip one conflicting load: BEFORE/AFTER or loadbefore edge (or use load: OMIT), and ensure STARTUP plugins only depend on other STARTUP plugins.
+
+**Source.** PaperMC/Paper MetaDependencyTree topological ordering and PluginLoadOrder STARTUP/POSTWORLD stages
+
+### S007 - Cross-plugin call signature exposes an isolated third plugin's types
+
+`critical`
+
+**Why it matters.** PaperPluginClassLoader classpath groups are non-transitive: joining Plugin B's classpath does not expose classes from Plugin C unless Plugin A also declares Plugin C under dependencies.server with join-classpath: true. Invoking a method, field, or subtype on Plugin B whose signature references Plugin C's classes fails with NoClassDefFoundError or LinkageError.
+
+**Fix.** Declare the third plugin under dependencies.server with join-classpath: true in the caller's paper-plugin.yml, or decouple the intermediate API signature from foreign plugin types.
+
+**Source.** PaperMC/Paper SimplePluginClassLoaderGroup non-transitive classloader visibility
 
 ### S010 - Two jars declare the same plugin name
 
@@ -568,6 +628,26 @@ being claimed.
 **Fix.** Only relevant if the server runs Folia. Check for a Folia build of the plugin.
 
 **Source.** folia-supported key of each descriptor
+
+### S070 - Cross-plugin ASM dataflow retains foreign plugin callbacks or instances across disable
+
+`critical`
+
+**Why it matters.** When Plugin A passes an instance of its own classes or lambdas into a static registry method in Plugin B without invoking Plugin B's unregister/remove cleanup in onDisable, or when Plugin A stores instances of Plugin B's classes inside a static field or collection without clearing on onDisable or PluginDisableEvent, one plugin's static GC root pins the other plugin's PaperPluginClassLoader in heap across plugin disable or reload.
+
+**Fix.** Invoke the target plugin's unregister/remove API inside onDisable(), and clear static fields or collections holding foreign plugin instances in onDisable() and PluginDisableEvent.
+
+**Source.** Inter-plugin ASM operand-stack dataflow across static fields, collections, and onDisable call graphs
+
+### S071 - Transitive META-INF/versions multi-release JAR classfile collision
+
+`critical`
+
+**Why it matters.** Multiple installed plugins bundle or shade conflicting Multi-Release (MR-JAR) classfiles under META-INF/versions/ or mix Multi-Release versioned overrides with unversioned base classfiles. When Paper or the host JVM executes on Java 17+ or 21+, Multi-Release classloaders resolve Java-version-specific class implementations while legacy classloaders or shading without Multi-Release: true resolve the base version. Mismatched method ABI, stripped manifests, or divergent bytecode across plugins cause non-deterministic linkage failures (NoSuchMethodError, IncompatibleClassChangeError) depending on classloader resolution order.
+
+**Fix.** Relocate shaded Multi-Release dependencies, ensure Multi-Release: true is preserved in manifest attributes, or align library versions across plugins.
+
+**Source.** JEP 238 Multi-Release JAR files, java.util.jar.JarFile versioning, and PaperPluginClassLoader classpath isolation
 
 ## pluginscope pack
 

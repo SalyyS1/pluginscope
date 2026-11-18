@@ -625,4 +625,39 @@ class StackAuditTest {
         assertTrue(finding != null) { "expected S070 in ${report.findings.map { it.ruleId }}" }
         assertTrue(finding!!.location.contains("CallerPlugin -> TargetPlugin")) { finding.location }
     }
+
+    @Test
+    fun `transitive multi-release JAR classfile collision reports S071 critical`(@TempDir directory: Path) {
+        val baseClassBytes = FixtureJars.emptyClass("com/acme/util/FastCodec", 52)
+        val mrClassBytes = FixtureJars.emptyClass("com/acme/util/FastCodec", 61, extraMethodName = "fastDecodeJava17")
+
+        val pluginAJar = FixtureJars.pluginJar(
+            jarName = "PluginA",
+            descriptor = FixtureJars.descriptor("PluginA", "com.example.a.MainA", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf(
+                "META-INF/MANIFEST.MF" to "Manifest-Version: 1.0\nMulti-Release: true\n".toByteArray(),
+                "META-INF/versions/17/com/acme/util/FastCodec.class" to mrClassBytes,
+            ),
+            generatedClasses = listOf("com/example/a/MainA"),
+        )
+
+        val pluginBJar = FixtureJars.pluginJar(
+            jarName = "PluginB",
+            descriptor = FixtureJars.descriptor("PluginB", "com.example.b.MainB", "26.3"),
+            descriptorEntry = "paper-plugin.yml",
+            extraEntries = mapOf(
+                "com/acme/util/FastCodec.class" to baseClassBytes,
+            ),
+            generatedClasses = listOf("com/example/b/MainB"),
+        )
+
+        install(directory, pluginAJar, pluginBJar)
+        val report = audit(directory)
+        val finding = report.findings.firstOrNull { it.ruleId == "S071" }
+        assertTrue(finding != null) { "expected S071 in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.CRITICAL, finding!!.severity)
+        assertTrue(finding.location.contains("com.acme.util.FastCodec")) { finding.location }
+        assertTrue(finding.detail.contains("Multi-Release")) { finding.detail }
+    }
 }

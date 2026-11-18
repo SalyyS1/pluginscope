@@ -194,6 +194,27 @@ object FixtureJars {
         return writer.toByteArray()
     }
 
+    fun classWithLdc(
+        internalName: String,
+        majorVersion: Int = 65,
+        ldcConstant: String,
+    ): ByteArray {
+        val writer = ClassWriter(0)
+        writer.visit(majorVersion, Opcodes.ACC_PUBLIC, internalName, null, "java/lang/Object", null)
+        writer.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null).apply {
+            visitCode()
+            visitVarInsn(Opcodes.ALOAD, 0)
+            visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false)
+            visitLdcInsn(ldcConstant)
+            visitInsn(Opcodes.POP)
+            visitInsn(Opcodes.RETURN)
+            visitMaxs(2, 1)
+            visitEnd()
+        }
+        writer.visitEnd()
+        return writer.toByteArray()
+    }
+
     fun eventClass(
         internalName: String,
         majorVersion: Int = 65,

@@ -34,7 +34,7 @@ inputs:
   version:
     description: 'PluginScope release version to download (without leading v)'
     required: false
-    default: '0.5.0'
+    default: '0.6.0'
   jar-path:
     description: 'Optional path to a pre-built pluginscope JAR instead of downloading from GitHub Releases'
     required: false

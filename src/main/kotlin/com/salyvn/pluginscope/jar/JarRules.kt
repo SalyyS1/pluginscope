@@ -379,6 +379,36 @@ object JarRules {
             "onDisable, and clear static cross-plugin provider fields in onDisable and PluginDisableEvent.",
     )
 
+    val PAPER_PLUGIN_REMAPPER_HAZARD = Rule(
+        id = "J075",
+        severity = Severity.CRITICAL,
+        title = "Paper 1.21.4+..26.3+ PluginRemapper hazard in descriptor or bytecode",
+        rationale = "Paper's runtime PluginRemapper converts legacy Spigot-mapped and CraftBukkit bytecode " +
+            "to Mojang mappings exclusively for legacy plugin.yml plugins. When a plugin declares paper-plugin.yml, " +
+            "Paper bypasses PluginRemapper entirely, so any direct or shaded references to net.minecraft.server " +
+            "or org.bukkit.craftbukkit fail with LinkageError. Conversely, when a plugin is declared only in plugin.yml " +
+            "without paper-plugin.yml, but uses dynamic ClassLoader definition or targets Paper 1.21.4+..26.3+ " +
+            "without remapping hooks, unremapped types or dynamic classes bypass runtime remapping.",
+        provenance = "PaperMC Paperweight runtime PluginRemapper and PaperPluginClassLoader remapping lifecycle",
+        fix = "Compile against Mojang mappings and Bukkit API for paper-plugin.yml plugins, or avoid referencing " +
+            "unremapped server internals and dynamic classloader definitions that bypass PluginRemapper.",
+    )
+
+    val UNRELOCATED_NMS_REFLECTION_LITERAL = Rule(
+        id = "J076",
+        severity = Severity.WARNING,
+        title = "Unrelocated NMS or CraftBukkit reflection string literal in bytecode",
+        rationale = "Bytecode contains String literals in the constant pool specifying internal CraftBukkit " +
+            "(org.bukkit.craftbukkit.*) or Minecraft Server (net.minecraft.* / net.minecraft.server.*) class names " +
+            "or packages passed to reflection. Paper's PluginRemapper and build tools (Shadow/relocate) only rewrite " +
+            "bytecode class and member descriptors, leaving String literals in LDC instructions unmodified. " +
+            "On modern Paper (1.20.5+..26.3+), legacy versioned packages (v1_*) and Spigot mappings no longer exist, " +
+            "causing ClassNotFoundException or NoSuchFieldException at runtime upon reflection lookup.",
+        provenance = "LDC string constants in method bytecode compared against CraftBukkit and NMS package patterns",
+        fix = "Replace reflection string literals with compile-time Bukkit/Paper API calls, or use Paperweight " +
+            "userdev Mojang mappings with ReflectionRemapper utilities.",
+    )
+
     val all = listOf(
         NOT_A_PLUGIN, DESCRIPTOR_INCOMPLETE, DESCRIPTOR_UNPARSEABLE, MAIN_CLASS_MISSING, NAME_ILLEGAL,
         MAIN_IN_SERVER_NAMESPACE, DESCRIPTOR_UNKNOWN_KEY, API_VERSION_ABSENT, API_VERSION_UNKNOWN,
@@ -389,5 +419,6 @@ object JarRules {
         RUNTIME_LIBRARIES_HINT, PAPER_DESCRIPTOR_DRIFT, PAPER_DEPENDENCY_GRAPH_INVALID, UNREACHABLE_BUNDLE,
         FOLIA_DECLARATION, UNCANCELLED_SCHEDULER_TASK, UNMANAGED_THREAD_OR_EXECUTOR_LEAK,
         STATIC_SERVER_ENTITY_RETENTION, CLASSLOADER_PINNING_HOOK, CROSS_PLUGIN_HOOK_OR_PIPELINE_LEAK,
+        PAPER_PLUGIN_REMAPPER_HAZARD, UNRELOCATED_NMS_REFLECTION_LITERAL,
     )
 }

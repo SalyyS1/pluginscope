@@ -29,6 +29,7 @@ object JarReader {
         val descriptors = mutableMapOf<DescriptorKind, PluginDescriptor>()
         val serviceProviders = mutableMapOf<String, List<String>>()
         val uses = mutableListOf<MemberUse>()
+        val stringUses = mutableListOf<StringLiteralUse>()
         val errors = mutableListOf<String>()
         var manifest = emptyMap<String, String>()
 
@@ -43,7 +44,7 @@ object JarReader {
                     entry.name.endsWith(".class") -> {
                         try {
                             val bytes = zip.getInputStream(entry).use { it.readBytes() }
-                            classes += readClass(bytes, entry.name, entry.size, collectUsesFor, uses)
+                            classes += readClass(bytes, entry.name, entry.size, collectUsesFor, uses, stringUses)
                         } catch (e: Exception) {
                             errors += "${entry.name}: unreadable class (${e::class.simpleName}: ${e.message})"
                             resources += ResourceEntry(entry.name, entry.size, entry.compressedSize, false)
@@ -95,6 +96,7 @@ object JarReader {
             serviceProviders = serviceProviders,
             readErrors = errors,
             manifest = manifest,
+            stringLiteralUses = stringUses,
         )
     }
 
@@ -109,8 +111,9 @@ object JarReader {
         sizeBytes: Long,
         collectUsesFor: ((String) -> Boolean)?,
         sink: MutableList<MemberUse>,
+        stringSink: MutableList<StringLiteralUse>,
     ): ClassEntry {
-        val collector = ClassCollector(entryName, sizeBytes, collectUsesFor, sink)
+        val collector = ClassCollector(entryName, sizeBytes, collectUsesFor, sink, stringSink)
         val parsingOptions = if (collectUsesFor == null) {
             ClassReader.SKIP_CODE or ClassReader.SKIP_DEBUG or ClassReader.SKIP_FRAMES
         } else {
@@ -125,6 +128,7 @@ object JarReader {
         private val sizeBytes: Long,
         private val collectUsesFor: ((String) -> Boolean)?,
         private val sink: MutableList<MemberUse>,
+        private val stringSink: MutableList<StringLiteralUse>,
     ) : ClassVisitor(Opcodes.ASM9) {
 
         private lateinit var name: String
@@ -138,6 +142,7 @@ object JarReader {
         private val methods = mutableSetOf<String>()
         private val fields = mutableSetOf<String>()
         private val deprecatedMembers = mutableSetOf<String>()
+        private val classStringConstants = mutableSetOf<String>()
 
         override fun visit(
             version: Int,
@@ -223,6 +228,16 @@ object JarReader {
                     }
                 }
 
+                override fun visitLdcInsn(value: Any?) {
+                    if (value is String) {
+                        val s = value.trim()
+                        if (isNmsOrCraftBukkitString(s)) {
+                            classStringConstants += s
+                            stringSink += StringLiteralUse(s, name, methodName, line)
+                        }
+                    }
+                }
+
                 /**
                  * Kotlin lambdas, method references and `invokedynamic`-desugared calls carry the
                  * real target in the bootstrap arguments, so they are followed too. Without this a
@@ -244,6 +259,10 @@ object JarReader {
             }
         }
 
+        private fun isNmsOrCraftBukkitString(s: String): Boolean =
+            s.contains("net.minecraft") || s.contains("net/minecraft") ||
+            s.contains("org.bukkit.craftbukkit") || s.contains("org/bukkit/craftbukkit")
+
         fun build() = ClassEntry(
             internalName = name,
             entryName = entryName,
@@ -258,6 +277,7 @@ object JarReader {
             fields = fields,
             deprecated = deprecated,
             deprecatedMembers = deprecatedMembers,
+            stringConstants = classStringConstants,
         )
     }
 }

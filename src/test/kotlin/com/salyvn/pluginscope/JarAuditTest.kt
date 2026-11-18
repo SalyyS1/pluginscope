@@ -386,4 +386,50 @@ class JarAuditTest {
         assertTrue(finding != null) { "expected J043 in ${report.findings.map { it.ruleId }}" }
         assertTrue(finding!!.detail.contains("Dual descriptors declare opposite")) { finding.detail }
     }
+
+    @Test
+    fun `paper-plugin yml referencing CraftBukkit reports J075 critical`() {
+        val paperYml = FixtureJars.descriptor(
+            "PaperRemapperHazard",
+            "fixtures.clean.CleanPlugin",
+            "26.3",
+        )
+        val jar = FixtureJars.pluginJar(
+            jarName = "paper-remapper-hazard",
+            descriptor = paperYml,
+            descriptorEntry = "paper-plugin.yml",
+            packagePaths = listOf("fixtures/clean/"),
+            generatedClasses = listOf("org/bukkit/craftbukkit/entity/CraftPlayer"),
+        )
+        val report = audit(jar)
+        val finding = report.findings.firstOrNull { it.ruleId == "J075" }
+        assertTrue(finding != null) { "expected J075 in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.CRITICAL, finding!!.severity)
+        assertTrue(finding.detail.contains("bypass PluginRemapper")) { finding.detail }
+    }
+
+    @Test
+    fun `bytecode containing NMS or CraftBukkit reflection string literal reports J076 warning`() {
+        val legacyYml = FixtureJars.descriptor(
+            "ReflectionLiteralPlugin",
+            "com.example.reflect.ReflectMain",
+            "1.20.4",
+        )
+        val ldcClassBytes = FixtureJars.classWithLdc(
+            internalName = "com/example/reflect/ReflectMain",
+            majorVersion = 65,
+            ldcConstant = "org.bukkit.craftbukkit.v1_20_R3.CraftServer",
+        )
+        val jar = FixtureJars.pluginJar(
+            jarName = "reflection-literal",
+            descriptor = legacyYml,
+            descriptorEntry = "plugin.yml",
+            extraEntries = mapOf("com/example/reflect/ReflectMain.class" to ldcClassBytes),
+        )
+        val report = audit(jar)
+        val finding = report.findings.firstOrNull { it.ruleId == "J076" }
+        assertTrue(finding != null) { "expected J076 in ${report.findings.map { it.ruleId }}" }
+        assertEquals(Severity.WARNING, finding!!.severity)
+        assertTrue(finding.detail.contains("unrelocated NMS or CraftBukkit reflection string literal")) { finding.detail }
+    }
 }

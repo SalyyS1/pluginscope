@@ -20,7 +20,19 @@ Four commands, four questions:
 
 `pluginscope mcp` also serves all analyses over the Model Context Protocol on `stdio` so coding agents can audit plugin artifacts directly.
 
-## What is new in v0.5.0
+## What is new in v0.6.0
+
+- Paper 1.21.4+..26.3+ PluginRemapper hazard analysis (`J075`):
+  - Detects `paper-plugin.yml` plugins containing direct or shaded references to `org.bukkit.craftbukkit` or `net.minecraft.server`. Modern Paper (1.20.5+..26.3+) bypasses `PluginRemapper` for `paper-plugin.yml` plugins, so unremapped server internals fail at runtime with `ClassNotFoundException` / `LinkageError`.
+  - Flags legacy `plugin.yml` plugins targeting modern Paper (1.21.4+..26.3+) that define classes dynamically via custom `ClassLoader` or `MethodHandles.Lookup#defineClass`, bypassing the runtime remapper.
+- Unrelocated NMS and CraftBukkit reflection string literal scanner (`J076`):
+  - Scans constant-pool `LDC` instructions across method bytecode for raw String literals referencing `net.minecraft.*` or `org.bukkit.craftbukkit.*`. Build relocation tools (Shadow/relocate) and runtime remappers only rewrite bytecode class descriptors, leaving string literals unmodified and failing upon reflection lookup on modern Paper.
+- Transitive Multi-Release JAR classfile collision detector (`S071`):
+  - Audits Multi-Release JAR (MR-JAR, JEP 238) structures across `plugins/` directories. Identifies collisions where multiple plugins bundle conflicting classfiles under `META-INF/versions/` (e.g. Java 11 vs Java 17) or mix versioned overrides with unversioned base classes with mismatched method ABI, plus stripped `Multi-Release: true` manifests.
+- Interactive multi-JAR classloader and dependency graph visualizer on GitHub Pages (`docs/index.html`):
+  - Client-side visualizer rendering Paper isolated classloader domains, open vs closed classloader boundaries, Multi-Release Java tiers, and dependency edges with a zero-upload binary demo.
+
+## Previous highlights in v0.5.0
 
 - Cross-plugin ASM dataflow leak analysis (`J074`, `S070`):
   - `J074`: Single-JAR cross-plugin hook and pipeline leak audit catching `PlaceholderExpansion#register()` without `unregister()` in `onDisable`, Netty `ChannelPipeline#addBefore/addAfter/addFirst/addLast` injections without `remove` or `replace` in `onDisable`, and `ServicesManager#load` / `getRegistration` / `PluginManager#getPlugin` return values retained in `static` fields or collections without cleanup in `onDisable` or `PluginDisableEvent` / `ServiceUnregisterEvent`.
@@ -59,37 +71,37 @@ Java 21 or newer. The release JAR is self-contained.
 
 ## Install
 
-Download `pluginscope-0.5.0.jar` from [GitHub Releases](https://github.com/SalyyS1/pluginscope/releases) and run:
+Download `pluginscope-0.6.0.jar` from [GitHub Releases](https://github.com/SalyyS1/pluginscope/releases) and run:
 
 ```bash
-java -jar pluginscope-0.5.0.jar --help
+java -jar pluginscope-0.6.0.jar --help
 ```
 
 ## Quick start
 
 ```bash
 # Audit one plugin JAR against a target Minecraft server version
-java -jar pluginscope-0.5.0.jar jar MyPlugin.jar --target 26.3
+java -jar pluginscope-0.6.0.jar jar MyPlugin.jar --target 26.3
 
 # Check API compatibility against Paper 1.21.4 (downloads and caches paper-api once)
-java -jar pluginscope-0.5.0.jar compat MyPlugin.jar --mc 1.21.4
+java -jar pluginscope-0.6.0.jar compat MyPlugin.jar --mc 1.21.4
 
 # Audit an entire server plugins/ folder for classloader blocks and shading collisions
-java -jar pluginscope-0.5.0.jar stack /srv/mc/plugins
+java -jar pluginscope-0.6.0.jar stack /srv/mc/plugins
 
 # Emit console output AND write OASIS SARIF v2.1.0 in a single run
-java -jar pluginscope-0.5.0.jar stack /srv/mc/plugins --sarif pluginscope.sarif
+java -jar pluginscope-0.6.0.jar stack /srv/mc/plugins --sarif pluginscope.sarif
 
 # Validate a resource pack directory or zip
-java -jar pluginscope-0.5.0.jar pack pack.zip --mc 26.3
+java -jar pluginscope-0.6.0.jar pack pack.zip --mc 26.3
 
 # Print all rules with rationale, remediation, and primary source provenance
-java -jar pluginscope-0.5.0.jar rules
+java -jar pluginscope-0.6.0.jar rules
 ```
 
 ## GitHub Actions & Code Scanning (SARIF v2.1.0)
 
-Use the composite action `SalyyS1/pluginscope@v0.5.0` to gate pull requests and publish shading, packaging, and Paper classloader findings directly to the GitHub **Security -> Code scanning** tab:
+Use the composite action `SalyyS1/pluginscope@v0.6.0` to gate pull requests and publish shading, packaging, and Paper classloader findings directly to the GitHub **Security -> Code scanning** tab:
 
 ```yaml
 name: Plugin Audit
@@ -113,7 +125,7 @@ jobs:
         run: ./gradlew build --no-daemon
 
       - name: Run PluginScope static audit
-        uses: SalyyS1/pluginscope@v0.5.0
+        uses: SalyyS1/pluginscope@v0.6.0
         with:
           command: jar
           path: build/libs
@@ -219,7 +231,7 @@ plugins directory: /srv/mc/plugins
   "mcpServers": {
     "pluginscope": {
       "command": "java",
-      "args": ["-jar", "/absolute/path/to/pluginscope-0.5.0.jar", "mcp"]
+      "args": ["-jar", "/absolute/path/to/pluginscope-0.6.0.jar", "mcp"]
     }
   }
 }
@@ -243,7 +255,7 @@ Exposed read-only tools: `scan_jar`, `check_api_compat`, `audit_plugins_dir`, `v
 ./gradlew test shadowJar --no-daemon
 ```
 
-Produces `build/libs/pluginscope-0.5.0.jar` (self-contained shaded CLI) and runs the full JUnit 6 suite against compiled bytecode fixtures.
+Produces `build/libs/pluginscope-0.6.0.jar` (self-contained shaded CLI) and runs the full JUnit 6 suite against compiled bytecode fixtures.
 
 ## Licence
 

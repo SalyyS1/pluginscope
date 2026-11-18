@@ -347,7 +347,7 @@
     </div>
     <div class="nav-links">
       <a class="pill-link" href="https://github.com/SalyyS1/pluginscope">GitHub Repository</a>
-      <a class="pill-link" href="https://github.com/SalyyS1/pluginscope/releases/latest">Download CLI v0.5.0</a>
+      <a class="pill-link" href="https://github.com/SalyyS1/pluginscope/releases/latest">Download CLI v0.6.0</a>
       <a class="pill-link" href="https://salyys1.github.io/foliascan/">FoliaScan</a>
       <a class="pill-link" href="https://salyys1.github.io/serverdoctor/">ServerDoctor</a>
     </div>
@@ -366,7 +366,8 @@
         <p>Synthesizes valid `.jar` archives with JVM `.class` constant pools in memory and runs the binary inspector.</p>
       </div>
       <div class="btn-row">
-        <button class="primary" id="btnDemoV050" type="button">Demo: Cross-Plugin Leak &amp; Multi-Loader Graph (v0.5.0)</button>
+        <button class="primary" id="btnDemoV060" type="button">Demo: PluginRemapper &amp; Multi-Release Collision (v0.6.0)</button>
+        <button id="btnDemoV050" type="button">Demo: Cross-Plugin Leak &amp; Multi-Loader Graph (v0.5.0)</button>
         <button id="btnDemoStack" type="button">Demo: 3-JAR Shading &amp; Paper Classloader Collision</button>
         <button id="btnDemoSingle" type="button">Demo: Single-JAR Unrelocated bStats + Drift</button>
         <button id="btnDemoLeak" type="button">Demo: Scheduler &amp; Classloader Leak (J070-J073)</button>
@@ -407,6 +408,14 @@
   </div>
 
   <div class="section-title">
+    <span>Interactive Multi-JAR Classloader &amp; Dependency Graph</span>
+    <span style="font-size:0.84rem;color:var(--muted);font-family:var(--mono)" id="graphMetaLabel">0 nodes</span>
+  </div>
+  <div id="graphContainer" class="empty-banner" style="position:relative;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:20px;overflow-x:auto;">
+    Drop `.jar` files above or click one of the binary demos to inspect classloader isolation domains, load stages, and Multi-Release Java tiers.
+  </div>
+
+  <div class="section-title">
     <span>Plugin Classloader &amp; Shaded Package Matrix</span>
   </div>
   <div id="matrixContainer" class="empty-banner">
@@ -422,7 +431,7 @@
   </div>
 
   <footer>
-    <div>PluginScope v0.5.0 | Pure client-side ZIP central directory + JVM bytecode constant-pool and cross-plugin lifecycle inspector (Apache-2.0)</div>
+    <div>PluginScope v0.6.0 | Pure client-side ZIP central directory + JVM bytecode constant-pool and cross-plugin lifecycle inspector (Apache-2.0)</div>
     <div>Companion tools: <a href="https://github.com/SalyyS1/foliascan">foliascan</a> | <a href="https://github.com/SalyyS1/serverdoctor">serverdoctor</a> | <a href="https://github.com/SalyyS1/minecraftkit">minecraftkit</a></div>
   </footer>
 </div>
@@ -569,6 +578,7 @@
     const cpCount = view.getUint16(8, false);
     const utf8Pool = new Array(cpCount);
     const classRefIndices = [];
+    const stringRefIndices = [];
     const nameAndTypePool = new Map();
     const methodRefEntries = [];
     const nameAndTypeCount = { count: 0 };
@@ -592,7 +602,13 @@
           offset += 2;
           break;
         }
-        case 8: case 16: case 19: case 20:
+        case 8: { // CONSTANT_String
+          const stringIndex = view.getUint16(offset, false);
+          stringRefIndices.push(stringIndex);
+          offset += 2;
+          break;
+        }
+        case 16: case 19: case 20:
           offset += 2;
           break;
         case 10: case 11: { // CONSTANT_Methodref / CONSTANT_InterfaceMethodref
@@ -704,9 +720,18 @@
       }
     }
 
+    const stringConstants = [];
+    for (const strIdx of stringRefIndices) {
+      const s = utf8Pool[strIdx];
+      if (s && (s.includes("net.minecraft") || s.includes("net/minecraft") ||
+                s.includes("org.bukkit.craftbukkit") || s.includes("org/bukkit/craftbukkit"))) {
+        stringConstants.push(s);
+      }
+    }
+
     const isKotlin = utf8Pool.includes("Lkotlin/Metadata;");
     const abiSig = `${internalName}@${majorVersion}:f=${fieldsCount}:m=${methodsCount}:nt=${nameAndTypeCount.count}`;
-    return { internalName, superName, majorVersion, isKotlin, referencedClasses, staticFields, declaredMethods, methodCalls, abiSig };
+    return { internalName, superName, majorVersion, isKotlin, referencedClasses, staticFields, declaredMethods, methodCalls, stringConstants, abiSig };
   }
 
   // Lightweight safe parser for plugin.yml and paper-plugin.yml
@@ -871,6 +896,7 @@
     const descriptors = {};
     const classes = [];
     const resources = [];
+    let manifestText = "";
 
     for (const entry of entries) {
       if (entry.isDirectory) continue;
@@ -878,15 +904,24 @@
         const text = new TextDecoder("utf-8").decode(await extractBytes(entry));
         descriptors[entry.name] = parseDescriptorYaml(entry.name, text);
         resources.push(entry);
-      } else if (entry.name.endsWith(".class") && !entry.name.startsWith("META-INF/versions/")) {
+      } else if (entry.name === "META-INF/MANIFEST.MF") {
+        manifestText = new TextDecoder("utf-8").decode(await extractBytes(entry));
+        resources.push(entry);
+      } else if (entry.name.endsWith(".class")) {
         try {
           const raw = await extractBytes(entry);
           const parsed = parseClassBytes(raw);
-          const internalName = parsed.internalName || entry.name.slice(0, -6);
+          const isMr = entry.name.startsWith("META-INF/versions/");
+          const mrVersion = isMr ? parseInt(entry.name.split("/")[2], 10) : null;
+          const normalizedClassPath = isMr ? entry.name.replace(/^META-INF\/versions\/\d+\//, "") : entry.name;
+          const internalName = parsed.internalName || normalizedClassPath.slice(0, -6);
           classes.push({
             ...parsed,
             internalName,
             entryName: entry.name,
+            isMultiRelease: isMr,
+            multiReleaseVersion: mrVersion,
+            normalizedClassPath,
             sizeBytes: entry.uncompSize || raw.byteLength
           });
         } catch (_err) {
@@ -949,6 +984,7 @@
       ownPackageRoot,
       isOwnCode,
       maxMajor,
+      manifestText,
       bundledGroups: Array.from(groupMap.values()).sort((a, b) => b.sizeBytes - a.sizeBytes)
     };
   }
@@ -1361,6 +1397,32 @@
             [`${nettyAdd.cls.replace(/\//g, ".")} -> ${nettyAdd.owner.replace(/\//g, ".")}#${nettyAdd.name}`],
             "Remove injected ChannelHandler instances from every ChannelPipeline in onDisable().");
         }
+      }
+
+      // J075: Paper 1.21.4+..26.3+ PluginRemapper hazard
+      if (d && d.kind === "paper-plugin.yml") {
+        const obcUses = jar.classes.filter(c =>
+          c.internalName.startsWith("org/bukkit/craftbukkit/") ||
+          c.internalName.startsWith("net/minecraft/server/") ||
+          (c.methodCalls || []).some(m => m.owner.startsWith("org/bukkit/craftbukkit/") || m.owner.startsWith("net/minecraft/server/"))
+        );
+        if (obcUses.length > 0) {
+          add("J075", "critical", "Paper 1.21.4+..26.3+ PluginRemapper hazard in descriptor or bytecode",
+            prefix + jar.fileName,
+            "Plugin declares paper-plugin.yml, causing modern Paper (1.20.5+..26.3+) to bypass PluginRemapper. References to org.bukkit.craftbukkit or net.minecraft.server will fail with ClassNotFoundException / LinkageError.",
+            obcUses.slice(0, 4).map(c => c.internalName.replace(/\//g, ".")),
+            "Compile against Mojang mappings and Bukkit API for paper-plugin.yml plugins.");
+        }
+      }
+
+      // J076: Unrelocated NMS or CraftBukkit reflection string literal in bytecode
+      const nmsLiterals = jar.classes.flatMap(c => (c.stringConstants || []).map(s => `${c.internalName.replace(/\//g, ".")}: "${s}"`));
+      if (nmsLiterals.length > 0) {
+        add("J076", "warning", "Unrelocated NMS or CraftBukkit reflection string literal in bytecode",
+          prefix + jar.fileName,
+          `Found ${nmsLiterals.length} unrelocated NMS or CraftBukkit reflection string literal(s). Paper's PluginRemapper and build relocation tools do not rewrite string literals in constant pools, causing ClassNotFoundException on modern Paper.`,
+          nmsLiterals.slice(0, 4),
+          "Replace reflection string literals with compile-time Bukkit/Paper API calls or ReflectionRemapper utilities.");
       }
     }
 
@@ -1819,6 +1881,40 @@
           }
         }
       }
+
+      // S071: Transitive META-INF/versions multi-release JAR classfile collision
+      const mrMap = new Map();
+      for (const p of plugins) {
+        const hasMf = (p.manifestText || "").includes("Multi-Release: true");
+        for (const c of p.classes) {
+          if (c.internalName.startsWith("org/bukkit/") || c.internalName.startsWith("net/minecraft/")) continue;
+          const norm = c.normalizedClassPath || c.entryName;
+          if (!mrMap.has(norm)) mrMap.set(norm, []);
+          mrMap.get(norm).push({ plugin: p, class: c, hasMf });
+        }
+      }
+
+      for (const [normPath, variants] of mrMap.entries()) {
+        const distinctPlugins = Array.from(new Set(variants.map(v => v.plugin.descriptor ? v.plugin.descriptor.name : v.plugin.fileName)));
+        if (distinctPlugins.length < 2) continue;
+
+        const mrList = variants.filter(v => v.class.isMultiRelease);
+        if (mrList.length === 0) continue;
+
+        const baseList = variants.filter(v => !v.class.isMultiRelease);
+        const missingMf = mrList.filter(v => !v.hasMf);
+        const abiSkews = new Set(variants.map(v => v.class.abiSig)).size > 1;
+
+        if (baseList.length > 0 || abiSkews || missingMf.length > 0) {
+          const dotted = normPath.replace(/\.class$/, "").replace(/\//g, ".");
+          add("S071", "critical",
+            "Transitive META-INF/versions multi-release JAR classfile collision",
+            dotted,
+            `Multi-Release (MR-JAR) classfile collision for ${dotted} across ${distinctPlugins.length} plugins: ${distinctPlugins.join(", ")}. Mismatched JVM classloader resolution causes runtime linkage errors.`,
+            variants.map(v => `${v.plugin.descriptor ? v.plugin.descriptor.name : v.plugin.fileName}: ${v.class.entryName} [${v.class.isMultiRelease ? "MR-JAR Java " + v.class.multiReleaseVersion : "Base Java " + majorToJava(v.class.majorVersion)}]`),
+            "Relocate shaded Multi-Release dependencies, ensure Multi-Release: true is preserved in manifest attributes, or align library versions across plugins.");
+        }
+      }
     }
 
     findings.sort((a, b) => (SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]) || a.ruleId.localeCompare(b.ruleId));
@@ -2021,10 +2117,87 @@
     document.getElementById("statCrit").style.color = critCount > 0 ? "var(--critical)" : "var(--ok)";
     document.getElementById("statWarn").textContent = String(warnCount);
 
+    renderClassloaderGraph(currentJars, currentFindings);
     renderMatrix(currentJars);
     renderFindings(currentFindings);
     btnExportSarif.disabled = false;
     btnExportJson.disabled = false;
+  }
+
+  function renderClassloaderGraph(jars, findings) {
+    const container = document.getElementById("graphContainer");
+    if (!container) return;
+    if (!jars || jars.length === 0) {
+      container.className = "empty-banner";
+      container.innerHTML = "Drop `.jar` files above or click one of the binary demos to inspect classloader isolation domains, load stages, and Multi-Release Java tiers.";
+      const lbl = document.getElementById("graphMetaLabel");
+      if (lbl) lbl.textContent = "0 nodes";
+      return;
+    }
+
+    const lbl = document.getElementById("graphMetaLabel");
+    if (lbl) lbl.textContent = `${jars.length} plugin node(s)`;
+    container.className = "";
+
+    const findingMap = new Map();
+    for (const f of findings) {
+      const loc = f.location || "";
+      for (const j of jars) {
+        const pName = j.descriptor ? j.descriptor.name : j.fileName;
+        if (loc.includes(pName) || loc.includes(j.fileName)) {
+          findingMap.set(pName, (findingMap.get(pName) || 0) + 1);
+        }
+      }
+    }
+
+    const cards = jars.map(jar => {
+      const d = jar.descriptor;
+      const name = d && d.name ? d.name : jar.fileName;
+      const isPaper = d && d.kind === "paper-plugin.yml";
+      const isLegacy = d && d.kind === "plugin.yml";
+      const openLoader = d && d.hasOpenClassloader !== false;
+      const issues = findingMap.get(name) || 0;
+      const mrClasses = jar.classes.filter(c => c.isMultiRelease);
+      const isMr = mrClasses.length > 0;
+      const mrVersions = Array.from(new Set(mrClasses.map(c => c.multiReleaseVersion).filter(Boolean))).sort((a,b) => a-b);
+
+      const loaderBadge = isPaper
+        ? `<span class="tag tag-paper">PaperClassLoader (${openLoader ? "Open" : "Closed"})</span>`
+        : (isLegacy ? `<span class="tag tag-legacy">Legacy PluginClassLoader</span>` : `<span class="tag tag-muted">Library</span>`);
+
+      const mrBadge = isMr
+        ? `<span class="tag tag-hazard">MR-JAR (Java ${mrVersions.join(",")})</span>`
+        : "";
+
+      const depsList = (d && d.dependencies.length > 0)
+        ? d.dependencies.map(dep => {
+            const edgeStyle = dep.joinClasspath === false ? "color:var(--critical);font-weight:600" : "color:var(--accent)";
+            return `<span style="font-size:0.75rem;margin-right:6px;${edgeStyle}">&#x2192; ${esc(dep.name)} (${dep.phase || "server"}${dep.joinClasspath === false ? ", isolated" : ""})</span>`;
+          }).join("")
+        : `<span style="color:var(--muted);font-size:0.75rem">No outgoing dependencies</span>`;
+
+      const borderStyle = issues > 0 ? "border: 1px solid var(--critical);box-shadow: 0 0 10px rgba(251,113,133,0.15);" : "border: 1px solid var(--border);";
+
+      return `<div class="graph-card" style="background:var(--panel-alt);border-radius:8px;padding:14px;min-width:280px;flex:1 1 280px;${borderStyle}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <strong style="font-size:1.05rem;">${esc(name)}</strong>
+          ${issues > 0 ? `<span class="tag tag-hazard">${issues} hazard(s)</span>` : `<span class="tag tag-ok">pass</span>`}
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+          ${loaderBadge}
+          ${mrBadge}
+          <span class="tag tag-ok">Java ${jar.maxMajor ? majorToJava(jar.maxMajor) : "?"}</span>
+        </div>
+        <div style="font-size:0.8rem;color:var(--muted);margin-bottom:6px;">
+          <strong>Loader Graph Outgoing Edges:</strong>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;background:var(--panel);padding:8px;border-radius:6px;">
+          ${depsList}
+        </div>
+      </div>`;
+    }).join("");
+
+    container.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:14px;">${cards}</div>`;
   }
 
   function renderMatrix(jars) {
@@ -2393,14 +2566,22 @@
       nameIdx: u8str(m.name),
       descIdx: u8str(m.desc || "()V")
     }));
-    for (const call of (spec.calls || [])) {
+    function addStringRef(val) {
+      const u = u8str(val);
+      cpChunks.push(new Uint8Array([8, (u >> 8) & 0xff, u & 0xff]));
+      return cpIndex++;
+    }
+    for (const s of (spec.stringConstants || [])) {
+      addStringRef(s);
+    }
+    for (const call of (spec.calls || spec.methodCalls || [])) {
       addMethodRef(call.owner, call.name, call.desc || "()V");
     }
 
     const header = new Uint8Array(10);
     const hv = new DataView(header.buffer);
     hv.setUint32(0, 0xCAFEBABE, false);
-    hv.setUint16(6, 65, false);
+    hv.setUint16(6, spec.majorVersion || 65, false);
     hv.setUint16(8, cpIndex, false);
 
     const clsTail = new Uint8Array(10);
@@ -2536,6 +2717,55 @@
     await handleFiles([legacyVaultJar, bridgeJar, questAddonJar]);
   });
 
+  // Demo 5 (v0.6.0): Paper 1.21.4+..26.3+ PluginRemapper hazard (J075), unrelocated NMS reflection literal (J076), and Multi-Release class collision (S071)
+  document.getElementById("btnDemoV060").addEventListener("click", async () => {
+    // 1. Core plugin with paper-plugin.yml touching CraftBukkit (J075) and carrying Java 17 Multi-Release FastCodec
+    const coreJar = buildStoredZip("PaperArenaCore-1.0.jar", {
+      "paper-plugin.yml": [
+        "name: PaperArenaCore",
+        "version: '1.0.0'",
+        "main: com.acme.arena.ArenaCorePlugin",
+        "api-version: '26.3'",
+        "folia-supported: true"
+      ].join("\n"),
+      "META-INF/MANIFEST.MF": "Manifest-Version: 1.0\nMulti-Release: true\n",
+      "com/acme/arena/ArenaCorePlugin.class": buildRichSyntheticClass({
+        internalName: "com/acme/arena/ArenaCorePlugin",
+        calls: [
+          { owner: "org/bukkit/craftbukkit/v1_20_R3/CraftServer", name: "getServer", desc: "()Lorg/bukkit/craftbukkit/v1_20_R3/CraftServer;" }
+        ]
+      }),
+      "META-INF/versions/17/com/acme/util/FastCodec.class": buildRichSyntheticClass({
+        internalName: "com/acme/util/FastCodec",
+        majorVersion: 61,
+        methods: [{ name: "fastDecodeJava17", desc: "()V" }]
+      })
+    });
+
+    // 2. Legacy plugin with plugin.yml containing raw NMS reflection string literal (J076) and base Java 8 FastCodec (S071)
+    const legacyJar = buildStoredZip("LegacyBridge-2.0.jar", {
+      "plugin.yml": [
+        "name: LegacyBridge",
+        "version: '2.0.0'",
+        "main: com.acme.bridge.LegacyBridgePlugin",
+        "api-version: '1.20'"
+      ].join("\n"),
+      "com/acme/bridge/LegacyBridgePlugin.class": buildRichSyntheticClass({
+        internalName: "com/acme/bridge/LegacyBridgePlugin",
+        stringConstants: [
+          "net.minecraft.server.v1_16_R3.PacketPlayOutChat",
+          "org.bukkit.craftbukkit.v1_20_R3.CraftServer"
+        ]
+      }),
+      "com/acme/util/FastCodec.class": buildRichSyntheticClass({
+        internalName: "com/acme/util/FastCodec",
+        majorVersion: 52
+      })
+    });
+
+    await handleFiles([coreJar, legacyJar]);
+  });
+
   function downloadBlob(filename, content, type) {
     const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);
@@ -2549,7 +2779,7 @@
   btnExportJson.addEventListener("click", () => {
     const payload = {
       tool: "pluginscope-web",
-      toolVersion: "0.5.0",
+      toolVersion: "0.6.0",
       jars: currentJars.map(j => ({
         fileName: j.fileName,
         plugin: j.descriptor ? j.descriptor.name : null,
@@ -2584,7 +2814,7 @@
         tool: {
           driver: {
             name: "pluginscope",
-            version: "0.5.0",
+            version: "0.6.0",
             informationUri: "https://github.com/SalyyS1/pluginscope",
             rules: uniqueRules
           }

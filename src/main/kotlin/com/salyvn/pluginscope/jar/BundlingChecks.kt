@@ -81,6 +81,8 @@ internal object BundlingChecks {
 
         checkClassVersions(jar, targetJava, sink)
         checkMojangAndVersionedBytecode(jar, targetJava, sink)
+        checkPluginRemapperHazards(jar, targetJava, sink)
+        checkNmsReflectionLiterals(jar, targetJava, sink)
     }
 
     private fun checkMojangAndVersionedBytecode(jar: JarInspection, targetJava: Int?, sink: FindingSink) {
@@ -167,6 +169,77 @@ internal object BundlingChecks {
                 evidence = offenders.groupBy { it.internalName.split('/').take(3).joinToString(".") }
                     .entries.sortedByDescending { it.value.size }.take(4)
                     .map { "${it.key}: ${it.value.size} classes" },
+            )
+        }
+    }
+
+    private fun checkPluginRemapperHazards(jar: JarInspection, targetJava: Int?, sink: FindingSink) {
+        val descriptor = jar.descriptor
+        val hasPaperDescriptor = com.salyvn.pluginscope.core.DescriptorKind.PAPER in jar.descriptors
+        val isModernPaper = descriptor?.apiVersion?.let {
+            com.salyvn.pluginscope.data.McVersions.shapeOf(it) == com.salyvn.pluginscope.data.McVersions.ApiVersionShape.CURRENT_NUMBERING
+        } == true || (targetJava != null && targetJava >= 25)
+
+        // Case 1: Plugin declares paper-plugin.yml, but references CraftBukkit or legacy NMS in bytecode.
+        // Modern Paper (1.20.5+..26.3+) skips PluginRemapper for paper-plugin.yml plugins.
+        if (hasPaperDescriptor) {
+            val obcUses = jar.memberUses.filter {
+                it.owner.startsWith("org/bukkit/craftbukkit/") || it.owner.startsWith("net/minecraft/server/")
+            }
+            val obcClasses = jar.classes.filter {
+                it.internalName.startsWith("org/bukkit/craftbukkit/") || it.internalName.startsWith("net/minecraft/server/") ||
+                    it.superName?.let { s -> s.startsWith("org/bukkit/craftbukkit/") || s.startsWith("net/minecraft/server/") } == true ||
+                    it.interfaces.any { iface -> iface.startsWith("org/bukkit/craftbukkit/") || iface.startsWith("net/minecraft/server/") }
+            }
+            if (obcUses.isNotEmpty() || obcClasses.isNotEmpty()) {
+                val sampleSites = (obcUses.map { it.render() } +
+                    obcClasses.map { it.internalName.replace('/', '.') }).distinct().take(4)
+                sink.add(
+                    JarRules.PAPER_PLUGIN_REMAPPER_HAZARD,
+                    location = jar.fileName,
+                    detail = "Plugin declares paper-plugin.yml, causing modern Paper (1.20.5+..26.3+) to bypass " +
+                        "PluginRemapper. References to org.bukkit.craftbukkit or net.minecraft.server will fail with " +
+                        "ClassNotFoundException / LinkageError because runtime bytecode remapping is disabled for Paper plugins.",
+                    evidence = sampleSites,
+                )
+            }
+        }
+
+        // Case 2: Legacy plugin.yml plugin targeting modern Paper (1.21.4+..26.3+) that defines classes
+        // dynamically via custom ClassLoader or MethodHandles, bypassing Paper's PluginRemapper.
+        if (descriptor?.kind == com.salyvn.pluginscope.core.DescriptorKind.LEGACY && !hasPaperDescriptor && isModernPaper) {
+            val dynamicDefUses = jar.memberUses.filter {
+                (it.owner == "java/lang/ClassLoader" && it.name.startsWith("defineClass")) ||
+                    (it.owner == "java/lang/invoke/MethodHandles\$Lookup" && it.name == "defineClass") ||
+                    (it.owner == "java/net/URLClassLoader" && it.name == "<init>")
+            }
+            if (dynamicDefUses.isNotEmpty()) {
+                sink.add(
+                    JarRules.PAPER_PLUGIN_REMAPPER_HAZARD,
+                    location = jar.fileName,
+                    detail = "Legacy plugin.yml targets Paper 1.21.4+..26.3+ and defines classes dynamically via " +
+                        "custom ClassLoader or MethodHandles. Dynamically defined classes bypass Paper's runtime " +
+                        "PluginRemapper and will fail to resolve remapped server symbols.",
+                    evidence = dynamicDefUses.map { it.render() }.distinct().take(4),
+                )
+            }
+        }
+    }
+
+    private fun checkNmsReflectionLiterals(jar: JarInspection, targetJava: Int?, sink: FindingSink) {
+        val nmsLiterals = jar.stringLiteralUses.filter { use ->
+            use.value.contains("net.minecraft") || use.value.contains("net/minecraft") ||
+                use.value.contains("org.bukkit.craftbukkit") || use.value.contains("org/bukkit/craftbukkit")
+        }
+        if (nmsLiterals.isNotEmpty()) {
+            val sampleSites = nmsLiterals.map { it.render() }.distinct().take(4)
+            sink.add(
+                JarRules.UNRELOCATED_NMS_REFLECTION_LITERAL,
+                location = jar.fileName,
+                detail = "Found ${nmsLiterals.size} unrelocated NMS or CraftBukkit reflection string literal(s) " +
+                    "in bytecode. Paper's PluginRemapper and build relocation tools do not rewrite string literals " +
+                    "in constant pools, causing ClassNotFoundException or NoSuchFieldException on modern Paper.",
+                evidence = sampleSites,
             )
         }
     }
